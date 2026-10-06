@@ -5,8 +5,8 @@
 // cuando la nube la confirma; si no hay red, se reintenta en la siguiente vuelta.
 //
 // Configuración (NUNCA en el código):
-//   - MITPAD_CONVEX_URL: https://<despliegue>.convex.cloud (variable de entorno, o
-//     la que se fijó al compilar con la misma variable)
+//   - MITPAD_CONVEX_URL: https://<despliegue>.convex.cloud (variable de entorno, la línea
+//     MITPAD_CONVEX_URL=... de ~/.config/mitpad/convex_token.env, o la fijada al compilar)
 //   - MITPAD_TOKEN: token de la app (variable de entorno, o la línea
 //     MITPAD_TOKEN=... de ~/.config/mitpad/convex_token.env)
 use convex::{ConvexClient, FunctionResult, Value};
@@ -21,17 +21,24 @@ struct Config {
     token: String,
 }
 
+/// Una línea CLAVE=valor de ~/.config/mitpad/convex_token.env (archivo privado del usuario).
+fn del_archivo(clave: &str) -> Option<String> {
+    let ruta = dirs::config_dir()?.join("mitpad").join("convex_token.env");
+    let prefijo = format!("{clave}=");
+    std::fs::read_to_string(ruta)
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix(prefijo.as_str()).map(|t| t.trim().to_string()))
+}
+
 fn leer_config() -> Option<Config> {
     let url = std::env::var("MITPAD_CONVEX_URL")
         .ok()
+        .or_else(|| del_archivo("MITPAD_CONVEX_URL"))
         .or_else(|| option_env!("MITPAD_CONVEX_URL").map(String::from))?;
-    let token = std::env::var("MITPAD_TOKEN").ok().or_else(|| {
-        let ruta = dirs::config_dir()?.join("mitpad").join("convex_token.env");
-        std::fs::read_to_string(ruta)
-            .ok()?
-            .lines()
-            .find_map(|l| l.strip_prefix("MITPAD_TOKEN=").map(|t| t.trim().to_string()))
-    })?;
+    let token = std::env::var("MITPAD_TOKEN")
+        .ok()
+        .or_else(|| del_archivo("MITPAD_TOKEN"))?;
     (!url.is_empty() && !token.is_empty()).then_some(Config { url, token })
 }
 
