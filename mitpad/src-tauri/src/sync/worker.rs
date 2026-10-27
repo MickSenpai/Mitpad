@@ -59,11 +59,17 @@ fn llamada(
             args.insert("userId".to_string(), texto(payload, "user_id"));
             args.insert("title".to_string(), texto(payload, "title"));
             args.insert("content".to_string(), texto(payload, "content"));
+            if let Some(status) = payload["status"].as_str() {
+                args.insert("status".to_string(), Value::from(status));
+            }
             "notes:crear"
         }
         "UPDATE" => {
             args.insert("title".to_string(), texto(payload, "title"));
             args.insert("content".to_string(), texto(payload, "content"));
+            if let Some(status) = payload["status"].as_str() {
+                args.insert("status".to_string(), Value::from(status));
+            }
             "notes:actualizar"
         }
         "DELETE" => "notes:borrar",

@@ -1,116 +1,67 @@
 # Mitpad
 
-App de notas **offline-first** para escritorio: Tauri 2 + SvelteKit 5 por delante,
-SQLite local por dentro y [Convex](https://convex.dev) como nube. Las notas se
-escriben primero en el disco y suben después; si no hay red, no se pierde nada.
+Mitpad is a local-first agent workbench for desktop, built with Tauri, SvelteKit, SQLite and Convex. It gives a human pilot and AI agents a shared model for projects, tasks, discussion, durable activity and reference notes.
 
-```
-┌──────────────┐   IPC (invoke)   ┌───────────────────────────┐
-│  SvelteKit   │ ───────────────► │  Rust / Tauri             │
-│  (interfaz)  │ ◄─────────────── │  ├─ SQLite local (notas)  │
-└──────────────┘                  │  └─ worker de sincroniza- │
-                                  │     ción → Convex          │
-                                  └───────────────────────────┘
-```
+## Current capabilities
 
-## Puesta en marcha
+- Projects and task board with backlog, to do, in progress, review, blocked and done states.
+- Drag tasks between board columns to update their status, and assign active local agents to tasks.
+- A workspace graph connects projects with their tasks for a visual overview.
+- Task priorities, due dates, typed comments and an append-only local activity feed.
+- Editable local agent directory with reversible deactivation. A primary Meido identity is created for assignment and coordination.
+- Notes can be marked as attended and remain available; the desktop UI does not offer note deletion.
+- Persistent notes and image attachments. Images stay in SQLite so they remain available offline. Each image is limited to 10 MB; each note allows up to 200 images and 50 MB total.
+- A project image library for uploading, previewing and deleting visual references independently of notes. It has the same 10 MB per-file, 200-image and 50 MB per-project limits.
+- Existing note synchronization with Convex remains available through the background worker.
+- Convex data model and a REST API for registering agents and letting them read or update projects, tasks, notes, comments and events.
 
-Requisitos: Node 20+, pnpm, Rust estable y las dependencias de sistema de Tauri
-(en Linux: `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, `librsvg2-dev`,
-`patchelf`, `libssl-dev`).
+## Run locally
+
+Requirements: Node 20+, Rust, and Tauri system libraries. On Linux, install the WebKitGTK 4.1 and other Tauri build dependencies for your distribution.
 
 ```bash
-pnpm install                 # dependencias del frontend
-npx convex dev               # despliega el backend de Convex (opcional)
-pnpm tauri dev               # arranca la app
+corepack enable
+pnpm install
+pnpm run tauri dev
 ```
 
-Comandos habituales:
+`pnpm dev` starts the web version. `pnpm check` checks the Svelte and TypeScript UI. `pnpm build` builds the frontend. Native Tauri builds also require the system libraries above.
 
-| Comando            | Qué hace                                        |
-| ------------------ | ----------------------------------------------- |
-| `pnpm dev`         | Solo el frontend (Vite)                         |
-| `pnpm tauri dev`   | La app completa                                 |
-| `pnpm tauri build` | Binario instalable                             |
-| `pnpm check`       | `svelte-check` sobre TypeScript y Svelte       |
-| `pnpm build`       | Compila el frontend a `build/`                 |
-| `cargo test`       | Tests de Rust (en `src-tauri`)                 |
-| `cargo clippy`     | Linter de Rust                                  |
+## Web workspace authentication
 
-## Configuración de la nube
+The web workbench uses Clerk for sign-in and Clerk's Convex integration for session JWT validation. It no longer asks the browser for the private desktop app token. Set `PUBLIC_CONVEX_URL` and `VITE_CLERK_PUBLISHABLE_KEY` in the web build environment. In Clerk Dashboard, activate the Convex integration and enable GitHub under social login providers. Then set `CLERK_FRONTEND_API_URL` and `MITPAD_WEB_ALLOWED_EMAIL` in the selected Convex deployment. The allowed email is the single account permitted to view and edit this personal workspace; leave it unset to fail closed. Do not put a Clerk secret key in browser configuration.
 
-El worker necesita dos datos: la URL del despliegue y el token de la app.
-**Ninguno de los dos está en el código.** Se leen, en este orden, de:
+### Continue on another computer
 
-1. las variables de entorno `MITPAD_CONVEX_URL` y `MITPAD_TOKEN`;
-2. el archivo privado `~/.config/mitpad/convex_token.env` (permisos `600`):
+Clone this repository and check out the branch you want to continue (`fix/cola-sincronizacion-y-camino-de-lectura` contains the current work). Install the pinned package manager and dependencies with `corepack enable` and `pnpm install`. For Clerk development keys, authenticate the Clerk CLI, link the existing app, and pull only its development keys:
 
-```ini
-MITPAD_CONVEX_URL=https://<despliegue>.convex.cloud
-MITPAD_TOKEN=<el token del despliegue>
+```bash
+npx -y clerk@latest auth login
+npx -y clerk@latest link --app app_3LIRZ8bCVaKVmNjgAVWONgL34vm
+npx -y clerk@latest env pull --app app_3LIRZ8bCVaKVmNjgAVWONgL34vm --instance dev
 ```
 
-El token se define en Convex con `npx convex env set MITPAD_TOKEN <valor>` (y
-`npx convex env set MITPAD_TOKEN --prod` para producción). Sin token la app
-sigue funcionando: las notas se quedan en el equipo y la interfaz avisa de que
-no hay nube configurada.
+Set `PUBLIC_CONVEX_URL=https://giddy-hedgehog-472.convex.cloud`, then log in to Convex and select that existing development deployment before running `npx convex dev`. The Clerk issuer and allowed account are already configured on that remote dev deployment. Desktop sync also needs `MITPAD_CONVEX_URL` and `MITPAD_TOKEN` in the private local config file `~/.config/mitpad/convex_token.env`; transfer those through a password manager or another private channel, never through GitHub. Production credentials are not part of this setup.
 
-El id de usuario está en `src/lib/config.ts` (`USER_ID`).
+The web dashboard supports task and agent filters, project creation, task updates, persistent notes (including attended status and project assignment), and project-linked image uploads. Its read refresh runs every five minutes while the tab is visible; mutations are written immediately.
 
-## Cómo funciona la sincronización
+## Convex setup
 
-1. Cada cambio (crear, editar, borrar) se escribe en SQLite **y** se anota en
-   la tabla `sync_queue`, dentro de la misma transacción. Si la app se cierra a
-   medias, no queda un cambio sin registrar.
-2. La cola guarda **el estado final**, no la historia: como mucho hay una
-   operación pendiente por nota. Editar una nota diez veces no genera diez
-   subidas, sino una con el contenido final.
-3. El worker (hilo aparte, cada 5 s) sube las operaciones pendientes a Convex.
-   - `INSERT` si la nube todavía no conoce la nota, `UPDATE` si ya la conoce,
-     `DELETE` si se borró.
-   - Si la nube responde "la nota ya existe" o "la nota no existe", el worker
-     reintenta con la otra operación para que app y nube convergieran.
-4. Una operación que falla no bloquea a las demás: se anota el motivo y se
-   reintenta hasta 5 veces. Pasado ese límite queda en estado `failed`, se ve
-   en la interfaz y se puede reintentar con el botón 🔁 (o desaparece si la
-   nota se borra, porque entonces ya no hay nada que subir).
-5. `notes.synced_at` guarda la fecha que la nube confirmó. Por eso el worker
-   sabe si una nota hay que crearla o editarla.
+The Convex backend is optional for local notes and workbench data. Configure `MITPAD_CONVEX_URL` and `MITPAD_TOKEN` either in the environment or in `~/.config/mitpad/convex_token.env` (make that file private). The existing note worker uses the Convex deployment URL and app token. To enable the new agent API and cloud image storage, deploy the Convex schema and functions, then set the app token as the Convex `MITPAD_TOKEN` environment variable.
 
-Al abrir la app se pueden traer las notas de otro equipo con **☁️ Traer de la
-nube**: se fusionan con las locales y, si una nota local tiene cambios sin
-subir, manda la local.
+Agent API routes use `/api/v1/` on the Convex site URL. The pilot registers an agent and receives its API key once; the backend stores only the key hash. Agents authenticate with `Authorization: Bearer <api_key>`. Available routes include:
 
-## Estructura
+- `GET|POST /api/v1/projects`
+- `PATCH /api/v1/projects/:id`
+- `GET|POST /api/v1/notes`
+- `PATCH /api/v1/notes/:id` (including project assignment and attended status)
+- `GET|POST /api/v1/tasks`
+- `PATCH /api/v1/tasks/:id`
+- `GET|POST /api/v1/tasks/:id/comments`
+- `GET /api/v1/events?since=<epoch_ms>`
 
-```
-mitpad/
-├── convex/                 Backend en Convex
-│   ├── schema.ts           Tablas: users, notes, noteLinks
-│   ├── notes.ts            Crear / actualizar / borrar / listar
-│   ├── links.ts            Enlaces entre notas (tipo Obsidian)
-│   ├── acceso.ts           Comprobación del token
-│   └── convex.config.ts    Variables del despliegue
-├── scripts/
-│   └── migrar_neon_a_convex.py   Copia la base de datos de Neon a Convex
-├── src/
-│   ├── lib/ipc.ts          Puente con los comandos de Rust
-│   ├── lib/config.ts       Id de usuario
-│   └── routes/+page.svelte Interfaz (lista + editor + estado de sincronización)
-└── src-tauri/src/
-    ├── lib.rs              Punto de entrada: comandos y arranque
-    ├── main.rs             Wrapper de `mitpad_lib::run()`
-    ├── db/                 SQLite: esquema, migración y consultas
-    └── sync/               config, worker (subida) y pull (bajada)
-```
+Keep agent API keys private. Do not commit the Convex token or credentials. The local Meido entry is an assignable identity, not a running model or an MCP connection; an external agent runtime still needs its own registered API key.
 
-## Notas sobre el modelo
+## Data storage
 
-- Las fechas son **milisegundos desde 1970** en las tres capas (SQLite,
-  Rust y Convex). Las bases de datos antiguas, con fechas en texto, se
-  migran solas al arrancar.
-- Convex no tiene usuarios: cada función comprueba el token de la app. Es un
-  token compartido, válido para un uso personal; para varios usuarios habría
-  que autenticación por usuario.
-- La tabla `users` y los enlaces entre notas están en el esquema, pero la
-  interfaz todavía no los usa.
+Notes, workbench records, activity and attached image bytes are stored in Mitpad's local SQLite database. Notes use the offline-first Convex synchronization queue. A project image is associated with the project selected in the image library. Workbench sync uploads projects, tasks, comments and described project links. Desktop project image bytes remain local; the authenticated web image library stores its uploads in Convex Storage. The REST API is not yet exposed through an MCP server.

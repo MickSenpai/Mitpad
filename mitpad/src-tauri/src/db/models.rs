@@ -8,6 +8,7 @@ pub struct Note {
     pub user_id: String,
     pub title: Option<String>,
     pub content: String,
+    pub status: String,
     pub created_at: i64,
     pub updated_at: i64,
     /// `updated_at` que la nube confirmó. `None` = todavía no se ha subido.
@@ -27,16 +28,4 @@ pub struct SyncStatus {
     pub last_sync_at: Option<i64>,
     /// Si la app tiene URL y token para hablar con la nube.
     pub configured: bool,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SyncItem {
-    pub id: i64,
-    pub operation: String,
-    pub table_name: String,
-    pub record_id: String,
-    pub payload: Option<String>,
-    pub status: String,
-    pub attempts: i64,
-    pub last_error: Option<String>,
 }

@@ -5,8 +5,10 @@
 //! en un INTEGER de SQLite. Antes eran TEXT ("YYYY-MM-DD HH:MM:SS"), por lo que
 //! `migrar_esquema` reconstruye las tablas si encuentra el esquema antiguo.
 
+pub mod images;
 pub mod models;
 pub mod queries;
+pub mod workbench;
 
 use rusqlite::{Connection, Result};
 use std::fs;
@@ -58,10 +60,25 @@ fn crear_esquema(conn: &Connection) -> Result<()> {
             user_id TEXT NOT NULL,
             title TEXT,                 -- Opcional
             content TEXT NOT NULL,      -- Obligatorio
+            status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','attended')),
             created_at INTEGER NOT NULL,-- ms desde 1970
             updated_at INTEGER NOT NULL,-- ms desde 1970
             synced_at INTEGER           -- updated_at confirmado por la nube (NULL = nunca subido)
         );
+
+        -- Adjuntos de memoria. Los bytes se conservan localmente para que
+        -- las notas sigan disponibles sin conexión; Convex guarda la copia nube.
+        CREATE TABLE IF NOT EXISTS note_images (
+            id TEXT PRIMARY KEY,
+            note_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            content BLOB NOT NULL,
+            cloud_image_id TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (note_id) REFERENCES notes (id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS note_images_by_note ON note_images(note_id, created_at);
 
         -- Tabla espejo: Relaciones tipo Obsidian
         CREATE TABLE IF NOT EXISTS note_links (
@@ -89,6 +106,114 @@ fn crear_esquema(conn: &Connection) -> Result<()> {
             created_at INTEGER NOT NULL,
             last_attempt_at INTEGER
         );
+
+        -- Núcleo local-first del workbench de agentes.
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'archived')),
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS project_links (
+            id TEXT PRIMARY KEY,
+            source_project_id TEXT NOT NULL,
+            target_project_id TEXT NOT NULL,
+            relation_type TEXT NOT NULL DEFAULT 'related_to' CHECK(relation_type IN ('related_to','parent_of','depends_on')),
+            description TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (source_project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (target_project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            UNIQUE(source_project_id, target_project_id),
+            CHECK(source_project_id <> target_project_id)
+        );
+        CREATE INDEX IF NOT EXISTS project_links_by_source ON project_links(source_project_id);
+        CREATE INDEX IF NOT EXISTS project_links_by_target ON project_links(target_project_id);
+        -- Galería de imágenes del proyecto, independiente de las notas.
+        CREATE TABLE IF NOT EXISTS project_images (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            content_type TEXT NOT NULL,
+            content BLOB NOT NULL,
+            cloud_image_id TEXT,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects (id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS project_images_by_project ON project_images(project_id, created_at);
+        CREATE TABLE IF NOT EXISTS agents (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            model TEXT,
+            provider TEXT,
+            client_type TEXT,
+            status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'disabled')),
+            created_at INTEGER NOT NULL,
+            last_seen_at INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS tasks (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'todo' CHECK(status IN ('backlog', 'todo', 'in_progress', 'review', 'blocked', 'done')),
+            priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('low', 'medium', 'high', 'urgent')),
+            assignee_agent_id TEXT,
+            due_at INTEGER,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (assignee_agent_id) REFERENCES agents(id) ON DELETE SET NULL
+        );
+        CREATE INDEX IF NOT EXISTS tasks_by_project_status ON tasks(project_id, status, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS task_comments (
+            id TEXT PRIMARY KEY,
+            task_id TEXT NOT NULL,
+            actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent')),
+            actor TEXT NOT NULL,
+            comment_type TEXT NOT NULL CHECK(comment_type IN ('message', 'instruction', 'question', 'answer', 'decision', 'update')),
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS comments_by_task ON task_comments(task_id, created_at);
+        CREATE TABLE IF NOT EXISTS activity_events (
+            id TEXT PRIMARY KEY,
+            project_id TEXT,
+            actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system')),
+            actor TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            payload TEXT NOT NULL DEFAULT '{}',
+            created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS events_by_project_time ON activity_events(project_id, created_at DESC);
+        CREATE INDEX IF NOT EXISTS events_by_time ON activity_events(created_at DESC);
+
+        -- IDs locales se conservan offline y se vinculan al _id de Convex.
+        CREATE TABLE IF NOT EXISTS cloud_mappings (
+            entity_type TEXT NOT NULL,
+            local_id TEXT NOT NULL,
+            cloud_id TEXT NOT NULL,
+            updated_at INTEGER NOT NULL,
+            PRIMARY KEY(entity_type, local_id),
+            UNIQUE(entity_type, cloud_id)
+        );
+        CREATE TABLE IF NOT EXISTS workbench_sync_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            entity_type TEXT NOT NULL CHECK(entity_type IN ('projects', 'tasks', 'task_comments')),
+            local_id TEXT NOT NULL,
+            payload TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'failed')),
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            created_at INTEGER NOT NULL,
+            last_attempt_at INTEGER,
+            UNIQUE(entity_type, local_id)
+        );
+        CREATE INDEX IF NOT EXISTS workbench_sync_pending ON workbench_sync_queue(status, created_at);
 
         -- Estado interno de la app (última sincronización correcta, etc.)
         CREATE TABLE IF NOT EXISTS app_state (
@@ -142,6 +267,15 @@ fn migrar_esquema(conn: &Connection) -> Result<()> {
     }
     if !tiene_columna(conn, "notes", "synced_at") {
         conn.execute_batch("ALTER TABLE notes ADD COLUMN synced_at INTEGER")?;
+    }
+    if !tiene_columna(conn, "project_images", "cloud_image_id") {
+        conn.execute_batch("ALTER TABLE project_images ADD COLUMN cloud_image_id TEXT")?;
+    }
+    if !tiene_columna(conn, "notes", "status") {
+        conn.execute_batch("ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")?;
+    }
+    if !tiene_columna(conn, "project_links", "description") {
+        conn.execute_batch("ALTER TABLE project_links ADD COLUMN description TEXT NOT NULL DEFAULT ''")?;
     }
 
     // 3. Las notas que ya estaban en la nube se marcan como sincronizadas.

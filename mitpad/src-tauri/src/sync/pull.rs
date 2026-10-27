@@ -35,7 +35,7 @@ pub async fn pull_notes(state: State<'_, DbState>, user_id: String) -> Result<Ve
     let mut args = BTreeMap::new();
     args.insert("token".to_string(), Value::from(config.token.clone()));
     args.insert("userId".to_string(), Value::from(user_id.clone()));
-    args.insert("limite".to_string(), Value::from(LIMITE));
+    args.insert("limite".to_string(), Value::Float64(LIMITE as f64));
 
     let resultado = cliente
         .query("notes:listar", args)
@@ -69,13 +69,14 @@ pub async fn pull_notes(state: State<'_, DbState>, user_id: String) -> Result<Ve
                 // No está en este equipo: se trae tal cual.
                 None => {
                     tx.execute(
-                        "INSERT INTO notes (id, user_id, title, content, created_at, updated_at, synced_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
+                        "INSERT INTO notes (id, user_id, title, content, status, created_at, updated_at, synced_at)
+                         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
                         params![
                             &nota.id,
                             &nota.user_id,
                             &nota.title,
                             &nota.content,
+                            &nota.status,
                             nota.created_at,
                             nota.updated_at
                         ],
@@ -95,9 +96,9 @@ pub async fn pull_notes(state: State<'_, DbState>, user_id: String) -> Result<Ve
                     if pendientes == 0 && nota.updated_at > updated_at {
                         tx.execute(
                             "UPDATE notes
-                                SET title = ?1, content = ?2, updated_at = ?3, synced_at = ?3
-                              WHERE id = ?4",
-                            params![&nota.title, &nota.content, nota.updated_at, &nota.id],
+                                SET title = ?1, content = ?2, status = ?3, updated_at = ?4, synced_at = ?4
+                              WHERE id = ?5",
+                            params![&nota.title, &nota.content, &nota.status, nota.updated_at, &nota.id],
                         )
                         .map_err(|e| e.to_string())?;
                     }
@@ -119,6 +120,7 @@ struct NotaRemota {
     content: String,
     created_at: i64,
     updated_at: i64,
+    status: String,
 }
 
 impl NotaRemota {
@@ -135,6 +137,9 @@ impl NotaRemota {
             content,
             created_at: numero(obj, "created_at").unwrap_or(0),
             updated_at: numero(obj, "updated_at").unwrap_or(0),
+            status: texto(obj, "status")
+                .filter(|s| s == "attended")
+                .unwrap_or_else(|| "open".into()),
         })
     }
 }

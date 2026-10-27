@@ -78,8 +78,8 @@ pub fn create_note(
     let ahora = ahora_ms();
 
     tx.execute(
-        "INSERT INTO notes (id, user_id, title, content, created_at, updated_at, synced_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5, NULL)",
+        "INSERT INTO notes (id, user_id, title, content, status, created_at, updated_at, synced_at)
+         VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?5, NULL)",
         params![&id, &user_id, &title, &content, ahora],
     )
     .map_err(|e| e.to_string())?;
@@ -89,9 +89,18 @@ pub fn create_note(
         "user_id": user_id,
         "title": title,
         "content": content,
+        "status": "open",
         "updated_at": ahora,
     });
     encolar(&tx, "INSERT", "notes", &id, &payload)?;
+    super::workbench::record_event(
+        &tx,
+        None,
+        "memory.created",
+        "note",
+        &id,
+        json!({"title": title}),
+    )?;
 
     tx.commit().map_err(|e| e.to_string())?;
 
@@ -100,6 +109,7 @@ pub fn create_note(
         user_id,
         title,
         content,
+        status: "open".into(),
         created_at: ahora,
         updated_at: ahora,
         synced_at: None,
@@ -116,11 +126,11 @@ pub fn update_note(
     let conn = bloquear(state)?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
 
-    let (user_id, synced_at, created_at): (String, Option<i64>, i64) = tx
+    let (user_id, synced_at, created_at, status): (String, Option<i64>, i64, String) = tx
         .query_row(
-            "SELECT user_id, synced_at, created_at FROM notes WHERE id = ?1",
+            "SELECT user_id, synced_at, created_at, status FROM notes WHERE id = ?1",
             params![&id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?
@@ -140,6 +150,7 @@ pub fn update_note(
         "user_id": user_id,
         "title": title,
         "content": content,
+        "status": status,
         "updated_at": ahora,
     });
     if synced_at.is_none() {
@@ -147,6 +158,14 @@ pub fn update_note(
     } else {
         encolar(&tx, "UPDATE", "notes", &id, &payload)?;
     }
+    super::workbench::record_event(
+        &tx,
+        None,
+        "memory.updated",
+        "note",
+        &id,
+        json!({"title": title}),
+    )?;
 
     tx.commit().map_err(|e| e.to_string())?;
 
@@ -155,6 +174,7 @@ pub fn update_note(
         user_id,
         title,
         content,
+        status,
         created_at,
         updated_at: ahora,
         synced_at,
@@ -162,21 +182,53 @@ pub fn update_note(
 }
 
 #[tauri::command]
-pub fn delete_note(state: State<'_, DbState>, id: String) -> Result<(), Error> {
+pub fn mark_note_attended(state: State<'_, DbState>, id: String) -> Result<Note, Error> {
     let conn = bloquear(state)?;
     let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
-
-    tx.execute("DELETE FROM notes WHERE id = ?1", params![&id])
-        .map_err(|e| e.to_string())?;
-
-    // La nota desaparece: sus operaciones anteriores (incluidas las fallidas)
-    // ya no sirven. Solo queda avisar a la nube de que la borre.
-    limpiar_cola(&tx, "notes", &id)?;
-    let payload = json!({ "id": id });
-    encolar(&tx, "DELETE", "notes", &id, &payload)?;
-
+    let (user_id, title, content, created_at, synced_at): (
+        String,
+        Option<String>,
+        String,
+        i64,
+        Option<i64>,
+    ) = tx
+        .query_row(
+            "SELECT user_id,title,content,created_at,synced_at FROM notes WHERE id=?1",
+            [&id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "No existe la nota.".to_string())?;
+    let now = ahora_ms();
+    tx.execute(
+        "UPDATE notes SET status='attended',updated_at=?1 WHERE id=?2",
+        params![now, id],
+    )
+    .map_err(|e| e.to_string())?;
+    let payload = json!({"id":id,"user_id":user_id,"title":title,"content":content,"status":"attended","updated_at":now});
+    encolar(
+        &tx,
+        if synced_at.is_some() {
+            "UPDATE"
+        } else {
+            "INSERT"
+        },
+        "notes",
+        &id,
+        &payload,
+    )?;
     tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(Note {
+        id,
+        user_id,
+        title,
+        content,
+        status: "attended".into(),
+        created_at,
+        updated_at: now,
+        synced_at,
+    })
 }
 
 /// Todas las notas locales, la más reciente primero.
@@ -185,7 +237,7 @@ pub fn list_notes(state: State<'_, DbState>) -> Result<Vec<Note>, Error> {
     let conn = bloquear(state)?;
     let mut st = conn
         .prepare(
-            "SELECT id, user_id, title, content, created_at, updated_at, synced_at
+            "SELECT id, user_id, title, content, status, created_at, updated_at, synced_at
                FROM notes ORDER BY updated_at DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -197,9 +249,10 @@ pub fn list_notes(state: State<'_, DbState>) -> Result<Vec<Note>, Error> {
                 user_id: r.get(1)?,
                 title: r.get(2)?,
                 content: r.get(3)?,
-                created_at: r.get(4)?,
-                updated_at: r.get(5)?,
-                synced_at: r.get(6)?,
+                status: r.get(4)?,
+                created_at: r.get(5)?,
+                updated_at: r.get(6)?,
+                synced_at: r.get(7)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -216,9 +269,24 @@ pub fn list_notes(state: State<'_, DbState>) -> Result<Vec<Note>, Error> {
 pub fn sync_status(state: State<'_, DbState>) -> Result<SyncStatus, Error> {
     let conn = bloquear(state)?;
 
-    let pending: i64 = conn
+    let pending_notes: i64 = conn
         .query_row(
             "SELECT count(*) FROM sync_queue WHERE status = 'pending'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let pending_images: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM note_images WHERE cloud_image_id IS NULL",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    let pending_workbench: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM workbench_sync_queue WHERE status='pending'",
             [],
             |r| r.get(0),
         )
@@ -226,7 +294,7 @@ pub fn sync_status(state: State<'_, DbState>) -> Result<SyncStatus, Error> {
 
     let failed: i64 = conn
         .query_row(
-            "SELECT count(*) FROM sync_queue WHERE status = 'failed'",
+            "SELECT (SELECT count(*) FROM sync_queue WHERE status = 'failed') + (SELECT count(*) FROM workbench_sync_queue WHERE status = 'failed')",
             [],
             |r| r.get(0),
         )
@@ -234,7 +302,7 @@ pub fn sync_status(state: State<'_, DbState>) -> Result<SyncStatus, Error> {
 
     let last_error: Option<String> = conn
         .query_row(
-            "SELECT last_error FROM sync_queue
+            "SELECT last_error FROM (SELECT last_error,id FROM sync_queue UNION ALL SELECT last_error,id FROM workbench_sync_queue)
               WHERE last_error IS NOT NULL ORDER BY id DESC LIMIT 1",
             [],
             |r| r.get(0),
@@ -254,7 +322,7 @@ pub fn sync_status(state: State<'_, DbState>) -> Result<SyncStatus, Error> {
         .and_then(|v| v.parse().ok());
 
     Ok(SyncStatus {
-        pending,
+        pending: pending_notes + pending_images + pending_workbench,
         failed,
         last_error,
         last_sync_at,
@@ -274,5 +342,6 @@ pub fn retry_failed(state: State<'_, DbState>) -> Result<i64, Error> {
             [],
         )
         .map_err(|e| e.to_string())?;
-    Ok(cambiadas as i64)
+    let workbench = conn.execute("UPDATE workbench_sync_queue SET status='pending', attempts=0, last_error=NULL WHERE status='failed'", []).map_err(|e| e.to_string())?;
+    Ok((cambiadas + workbench) as i64)
 }
