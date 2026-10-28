@@ -527,13 +527,13 @@
 {#if !isDesktop}
     <WebWorkbench />
 {:else if !desktopAuthLoaded}
-    <main class="desktop-auth-screen"><section class="desktop-auth-card"><div class="brand-mark">M</div><h1>Conectando con Clerk</h1><p>Preparando el acceso seguro a tu workspace.</p></section></main>
+    <main class="desktop-auth-screen"><section class="desktop-auth-card"><img class="brand-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><h1>Conectando con Clerk</h1><p>Preparando el acceso seguro a tu workspace.</p></section></main>
 {:else if !desktopAuthenticated}
-    <main class="desktop-auth-screen"><section class="desktop-auth-card"><div class="eyebrow">MITPAD · ACCESO SEGURO</div><h1>Inicia sesión</h1><p>Usa la misma cuenta Clerk que en la versión web para abrir tu workspace compartido.</p><div class="desktop-clerk-widget" bind:this={signInNode}></div>{#if error}<small class="desktop-auth-error">{error}</small>{/if}</section></main>
+    <main class="desktop-auth-screen"><section class="desktop-auth-card"><img class="login-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><div class="eyebrow">MITPAD · ACCESO SEGURO</div><h1>Inicia sesión</h1><p>Usa la misma cuenta Clerk que en la versión web para abrir tu workspace compartido.</p><div class="desktop-clerk-widget" bind:this={signInNode}></div>{#if error}<small class="desktop-auth-error">{error}</small>{/if}</section></main>
 {:else}
 <div class="app-shell">
     <aside class="sidebar">
-        <a class="brand" href="/" aria-label="Mitpad inicio"><span class="brand-mark">M</span><span>mitpad<small>AGENT WORKBENCH</small></span></a>
+        <a class="brand" href="/" aria-label="Mitpad inicio"><img class="brand-mark" src="/mitpad-mark.jpg" alt="" /><span>mitpad<small>AGENT WORKBENCH</small></span></a>
         <div class="sidebar-scroll">
         <div class="nav-label">WORKSPACE</div>
         <nav>
@@ -694,7 +694,7 @@
     .sidebar { background: #11161e; border-right: 1px solid #242b36; display: flex; flex-direction: column; padding: 19px 13px 12px; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
     .brand { display: flex; align-items: center; gap: 10px; color: #f0f4f8; text-decoration: none; font-size: 17px; font-weight: 700; padding: 0 8px 28px; letter-spacing: -0.4px; }
     .brand small { display: block; color: #768394; font-size: 9px; letter-spacing: 1.5px; margin-top: 2px; }
-    .brand-mark { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; color: #071018; background: linear-gradient(135deg,#8ce8d1,#74a9ff); font-weight: 800; }
+    .brand-mark { width: 30px; height: 30px; border-radius: 9px; display: block; object-fit: cover; border: 1px solid #2b3b48; flex:none; }.login-mark { display:block; width:64px; height:64px; object-fit:cover; border:1px solid #35414e; border-radius:16px; margin-bottom:18px; }
     .nav-label { color: #687587; font-size: 10px; font-weight: 700; letter-spacing: 1px; padding: 8px 10px; display: flex; justify-content: space-between; align-items: center; }
     .nav-label button { border: 0; color: #97a4b4; background: transparent; font-size: 17px; padding: 0 4px; }
     nav { display: grid; gap: 3px; }
