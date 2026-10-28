@@ -1,19 +1,19 @@
 import { ConvexError } from "convex/values";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { env } from "./_generated/server";
-import { userIdPersonal } from "./acceso";
 
 export async function exigirWeb(ctx: QueryCtx | MutationCtx) {
   const identity = await ctx.auth.getUserIdentity();
-  const email = identity?.email?.trim().toLowerCase();
-  const allowedEmail = env.MITPAD_WEB_ALLOWED_EMAIL?.trim().toLowerCase();
-  if (!identity || !email || !allowedEmail || email !== allowedEmail) {
-    throw new ConvexError("Esta cuenta no tiene acceso al workspace de Mitpad.");
+  if (!identity?.tokenIdentifier) {
+    throw new ConvexError("Inicia sesión con Clerk para abrir tu workspace.");
   }
-  const workspace = await ctx.db
-    .query("workspaces")
-    .withIndex("by_ownerId", (q) => q.eq("ownerId", userIdPersonal()))
+  const account = await ctx.db
+    .query("webAccounts")
+    .withIndex("by_tokenIdentifier", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
     .unique();
-  if (!workspace) throw new ConvexError("No existe el workspace personal de Mitpad.");
+  if (!account) {
+    throw new ConvexError("La sesión aún no tiene un workspace. Vuelve a iniciar sesión para crearlo.");
+  }
+  const workspace = await ctx.db.get(account.workspaceId);
+  if (!workspace) throw new ConvexError("El workspace de esta cuenta ya no está disponible.");
   return { identity, workspace };
 }

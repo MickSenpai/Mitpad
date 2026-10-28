@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { env, mutation, query } from "./_generated/server";
 import { userIdPersonal } from "./acceso";
 import { exigirWeb } from "./webAuth";
 
@@ -8,6 +8,72 @@ const project = v.object({ id: v.id("projects"), name: v.string(), description: 
 const task = v.object({ id: v.id("tasks"), projectId: v.id("projects"), title: v.string(), description: v.string(), status, priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent")), assigneeAgentId: v.union(v.id("agents"), v.null()), createdByType: v.union(v.literal("human"), v.literal("agent")), createdById: v.string(), updatedAt: v.number() });
 const note = v.object({ id: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), projectId: v.union(v.id("projects"), v.null()), updatedAt: v.number() });
 const image = v.object({ id: v.id("noteImages"), projectId: v.union(v.id("projects"), v.null()), noteId: v.union(v.string(), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), url: v.union(v.string(), v.null()), createdAt: v.number() });
+export const asegurarWorkspace = mutation({
+  args: {},
+  returns: v.object({ id: v.id("workspaces"), name: v.string() }),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity?.tokenIdentifier) throw new ConvexError("Inicia sesión con Clerk.");
+
+    const existing = await ctx.db
+      .query("webAccounts")
+      .withIndex("by_tokenIdentifier", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+      .unique();
+    if (existing) {
+      const workspace = await ctx.db.get(existing.workspaceId);
+      if (!workspace) throw new ConvexError("El workspace de esta cuenta ya no está disponible.");
+      return { id: workspace._id, name: workspace.name };
+    }
+
+    const email = identity.email?.trim().toLowerCase();
+    const allowedEmail = env.MITPAD_WEB_ALLOWED_EMAIL?.trim().toLowerCase();
+    const legacyWorkspace = await ctx.db.query("workspaces")
+      .withIndex("by_ownerId", (q) => q.eq("ownerId", userIdPersonal()))
+      .unique();
+    const legacyAccount = legacyWorkspace
+      ? await ctx.db.query("webAccounts")
+          .withIndex("by_workspaceId", (q) => q.eq("workspaceId", legacyWorkspace._id))
+          .unique()
+      : null;
+    let workspace = null;
+    let claimingLegacy = false;
+
+    if (legacyWorkspace && !legacyAccount) {
+      if (!email || !allowedEmail || email !== allowedEmail) {
+        throw new ConvexError("El workspace existente está reservado para su cuenta propietaria.");
+      }
+      workspace = legacyWorkspace;
+      claimingLegacy = true;
+    } else {
+      const now = Date.now();
+      const id = await ctx.db.insert("workspaces", {
+        ownerId: identity.tokenIdentifier,
+        name: "Mi espacio",
+        createdAt: now,
+        updatedAt: now,
+      });
+      workspace = await ctx.db.get(id);
+    }
+    if (!workspace) throw new ConvexError("No se pudo crear el workspace de esta cuenta.");
+
+    if (claimingLegacy) {
+      const legacyNotes = await ctx.db.query("notes")
+        .withIndex("by_userId_and_updatedAt", (q) => q.eq("userId", userIdPersonal()))
+        .take(500);
+      for (const note of legacyNotes) {
+        if (!note.workspaceId) await ctx.db.patch(note._id, { workspaceId: workspace._id });
+      }
+    }
+
+    await ctx.db.insert("webAccounts", {
+      tokenIdentifier: identity.tokenIdentifier,
+      workspaceId: workspace._id,
+      createdAt: Date.now(),
+    });
+    return { id: workspace._id, name: workspace.name };
+  },
+});
+
 export const dashboard = query({
   args: {},
   returns: v.object({ projects: v.array(project), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), clientType: v.string(), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
@@ -80,7 +146,7 @@ export const guardarNota = mutation({
     if (existing && existing.workspaceId !== workspace._id) throw new ConvexError("La nota no pertenece al workspace.");
     const noteId = args.id ?? crypto.randomUUID();
     if (existing) await ctx.db.patch(existing._id, { title: args.title.trim() || undefined, content: args.content, projectId: args.projectId ?? undefined, status: args.status ?? existing.status ?? "open", updatedAt: now });
-    else await ctx.db.insert("notes", { uuid: noteId, userId: userIdPersonal(), workspaceId: workspace._id, projectId: args.projectId ?? undefined, kind: "note", title: args.title.trim() || undefined, content: args.content, status: args.status ?? "open", createdAt: now, updatedAt: now });
+    else await ctx.db.insert("notes", { uuid: noteId, userId: identity.tokenIdentifier, workspaceId: workspace._id, projectId: args.projectId ?? undefined, kind: "note", title: args.title.trim() || undefined, content: args.content, status: args.status ?? "open", createdAt: now, updatedAt: now });
     await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: args.projectId ?? undefined, actorType: "human", actorId: identity.tokenIdentifier, eventType: existing ? "note_updated" : "note_created", entityType: "note", entityId: noteId, summary: `${existing ? "Actualizó" : "Creó"} la nota ${args.title.trim() || "sin título"}`, createdAt: now });
     return noteId;
   },

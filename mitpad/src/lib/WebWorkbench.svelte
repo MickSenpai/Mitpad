@@ -68,6 +68,7 @@
             const jwt = await clerk.session.getToken();
             if (!jwt) throw new Error('Clerk no entregó un token de sesión.');
             client.setAuth(jwt);
+            await client.mutation(api.web.asegurarWorkspace, {});
             if (signInMounted && signInNode) { clerk.unmountSignIn(signInNode); signInMounted = false; }
             await refresh(true);
         } catch (e) { connected = false; error = `No se autorizó el acceso al workspace: ${message(e)}`; }

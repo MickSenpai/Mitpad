@@ -2,7 +2,6 @@ import { ConvexError, v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import { exigirWeb } from "./webAuth";
-import { userIdPersonal } from "./acceso";
 
 const relationType = v.union(v.literal("related_to"), v.literal("parent_of"), v.literal("depends_on"));
 const taskStatus = v.union(v.literal("backlog"), v.literal("todo"), v.literal("in_progress"), v.literal("review"), v.literal("done"), v.literal("blocked"));
@@ -145,14 +144,14 @@ export const upsertNote = mutation({
   args: { uuid: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), createdAt: v.number(), updatedAt: v.number() },
   returns: v.string(),
   handler: async (ctx, args) => {
-    const { workspace: ws } = await workspace(ctx);
+    const { workspace: ws, identity } = await workspace(ctx);
     const current = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", args.uuid)).unique();
     if (current && current.workspaceId !== ws._id) throw new ConvexError("La nota no pertenece al workspace.");
     if (current) {
       if (args.updatedAt >= current.updatedAt) await ctx.db.patch(current._id, { title: args.title ?? undefined, content: args.content, status: args.status, updatedAt: args.updatedAt });
       return args.uuid;
     }
-    await ctx.db.insert("notes", { uuid: args.uuid, userId: userIdPersonal(), workspaceId: ws._id, kind: "note", title: args.title ?? undefined, content: args.content, status: args.status, createdAt: args.createdAt, updatedAt: args.updatedAt });
+    await ctx.db.insert("notes", { uuid: args.uuid, userId: identity.tokenIdentifier, workspaceId: ws._id, kind: "note", title: args.title ?? undefined, content: args.content, status: args.status, createdAt: args.createdAt, updatedAt: args.updatedAt });
     return args.uuid;
   },
 });

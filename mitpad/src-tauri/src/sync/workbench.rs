@@ -904,6 +904,15 @@ pub async fn sync_workbench_now(
         .await
         .map_err(|e| e.to_string())?;
     client.set_auth(Some(token)).await;
+    let workspace_result = client
+        .mutation("web:asegurarWorkspace", BTreeMap::new())
+        .await
+        .map_err(|e| e.to_string())?;
+    match workspace_result {
+        FunctionResult::Value(_) => {}
+        FunctionResult::ErrorMessage(e) => return Err(e),
+        FunctionResult::ConvexError(e) => return Err(e.message),
+    }
     let initial_result = client
         .query("desktopSync:snapshot", BTreeMap::new())
         .await

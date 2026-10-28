@@ -1,0 +1,13 @@
+services:
+  - type: web
+    runtime: static
+    name: mitpad-web
+    rootDir: mitpad
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm run build
+    staticPublishPath: mitpad/build
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PUBLIC_CONVEX_URL
+        sync: false
+      - key: VITE_CLERK_PUBLISHABLE_KEY
+        sync: false

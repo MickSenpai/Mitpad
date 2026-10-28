@@ -12,6 +12,15 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_ownerId", ["ownerId"]),
 
+  // Clerk identity -> private workspace; preserve legacy ownerId for desktop agents.
+  webAccounts: defineTable({
+    tokenIdentifier: v.string(),
+    workspaceId: v.id("workspaces"),
+    createdAt: v.number(),
+  })
+    .index("by_tokenIdentifier", ["tokenIdentifier"])
+    .index("by_workspaceId", ["workspaceId"]),
+
   agents: defineTable({
     workspaceId: v.id("workspaces"),
     name: v.string(),
