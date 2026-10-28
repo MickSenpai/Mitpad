@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "mitpad",
+  "productName": "Mitpad",
   "version": "0.1.0",
   "identifier": "mitpad",
   "build": {
@@ -12,13 +12,14 @@
   "app": {
     "windows": [
       {
-        "title": "mitpad",
-        "width": 800,
-        "height": 600
+        "title": "Mitpad",
+        "width": 1100,
+        "height": 700
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com https://img.clerk.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://*.clerk.accounts.dev https://*.clerk.com https://*.convex.cloud https://*.convex.site https://clerk-telemetry.com; frame-src https://*.clerk.accounts.dev https://*.clerk.com",
+      "devCsp": "default-src 'self'; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com https://img.clerk.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421 https://*.clerk.accounts.dev https://*.clerk.com https://*.convex.cloud https://*.convex.site https://clerk-telemetry.com; frame-src https://*.clerk.accounts.dev https://*.clerk.com"
     }
   },
   "bundle": {

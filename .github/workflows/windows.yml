@@ -1,0 +1,47 @@
+name: Windows desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: mitpad
+    env:
+      PUBLIC_CONVEX_URL: ${{ vars.PUBLIC_CONVEX_URL }}
+      VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 12.15.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mitpad/pnpm-lock.yaml
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Check public build configuration
+        shell: pwsh
+        run: |
+          if (-not $env:PUBLIC_CONVEX_URL -or -not $env:VITE_CLERK_PUBLISHABLE_KEY) {
+            throw "Set PUBLIC_CONVEX_URL and VITE_CLERK_PUBLISHABLE_KEY as GitHub Actions variables before building installers."
+          }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm run check
+      - run: pnpm tauri build --bundles nsis,msi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mitpad-windows-installers
+          path: |
+            mitpad/src-tauri/target/release/bundle/nsis/*.exe
+            mitpad/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error

@@ -5,6 +5,140 @@ import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
 
 export default defineSchema({
+  workspaces: defineTable({
+    ownerId: v.string(),
+    name: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_ownerId", ["ownerId"]),
+
+  agents: defineTable({
+    workspaceId: v.id("workspaces"),
+    name: v.string(),
+    model: v.string(),
+    modelProvider: v.string(),
+    clientType: v.string(),
+    pilot: v.string(),
+    apiKeyHash: v.string(),
+    active: v.boolean(),
+    createdAt: v.number(),
+    lastSeenAt: v.optional(v.number()),
+  })
+    .index("by_apiKeyHash", ["apiKeyHash"])
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"]),
+
+  projects: defineTable({
+    workspaceId: v.id("workspaces"),
+    clientId: v.optional(v.string()),
+    name: v.string(),
+    description: v.string(),
+    status: v.union(v.literal("active"), v.literal("archived")),
+    createdByType: v.union(v.literal("human"), v.literal("agent")),
+    createdById: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspaceId_and_clientId", ["workspaceId", "clientId"])
+    .index("by_workspaceId_and_updatedAt", ["workspaceId", "updatedAt"])
+    .index("by_workspaceId_and_status_and_updatedAt", ["workspaceId", "status", "updatedAt"]),
+
+  projectLinks: defineTable({
+    workspaceId: v.id("workspaces"),
+    clientId: v.optional(v.string()),
+    sourceProjectId: v.id("projects"),
+    targetProjectId: v.id("projects"),
+    relationType: v.union(v.literal("related_to"), v.literal("parent_of"), v.literal("depends_on")),
+    description: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId_and_clientId", ["workspaceId", "clientId"])
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
+    .index("by_sourceProjectId_and_targetProjectId", ["sourceProjectId", "targetProjectId"]),
+
+  // Technical summaries derived from source structure and project docs.
+  // Runtime/user records and personal information are deliberately excluded.
+  projectKnowledge: defineTable({
+    workspaceId: v.id("workspaces"),
+    projectId: v.id("projects"),
+    clientId: v.string(),
+    kind: v.union(
+      v.literal("module"), v.literal("function"), v.literal("data"),
+      v.literal("capability"), v.literal("integration"), v.literal("decision"),
+    ),
+    title: v.string(),
+    summary: v.string(),
+    source: v.string(),
+    tags: v.array(v.string()),
+    updatedAt: v.number(),
+  })
+    .index("by_workspaceId_and_projectId", ["workspaceId", "projectId"])
+    .index("by_workspaceId_and_clientId", ["workspaceId", "clientId"])
+    .index("by_projectId_and_kind", ["projectId", "kind"]),
+
+  tasks: defineTable({
+    workspaceId: v.id("workspaces"),
+    clientId: v.optional(v.string()),
+    projectId: v.id("projects"),
+    parentTaskId: v.optional(v.id("tasks")),
+    title: v.string(),
+    description: v.string(),
+    status: v.union(
+      v.literal("backlog"), v.literal("todo"), v.literal("in_progress"),
+      v.literal("review"), v.literal("done"), v.literal("blocked"),
+    ),
+    priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent")),
+    dueAt: v.optional(v.number()),
+    assigneeAgentId: v.optional(v.id("agents")),
+    createdByType: v.union(v.literal("human"), v.literal("agent")),
+    createdById: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_workspaceId_and_clientId", ["workspaceId", "clientId"])
+    .index("by_workspaceId_and_updatedAt", ["workspaceId", "updatedAt"])
+    .index("by_workspaceId_and_status_and_updatedAt", ["workspaceId", "status", "updatedAt"])
+    .index("by_projectId_and_updatedAt", ["projectId", "updatedAt"])
+    .index("by_projectId_and_status_and_updatedAt", ["projectId", "status", "updatedAt"])
+    .index("by_assigneeAgentId_and_status", ["assigneeAgentId", "status"]),
+
+  taskComments: defineTable({
+    workspaceId: v.id("workspaces"),
+    clientId: v.optional(v.string()),
+    projectId: v.id("projects"),
+    taskId: v.id("tasks"),
+    authorType: v.union(v.literal("human"), v.literal("agent")),
+    authorId: v.string(),
+    kind: v.union(
+      v.literal("message"), v.literal("instruction"), v.literal("question"),
+      v.literal("answer"), v.literal("decision"), v.literal("update"),
+    ),
+    content: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId_and_clientId", ["workspaceId", "clientId"])
+    .index("by_taskId_and_createdAt", ["taskId", "createdAt"])
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"]),
+
+  // Append-only: workbench mutations add events atomically with each change.
+  activityEvents: defineTable({
+    workspaceId: v.id("workspaces"),
+    projectId: v.optional(v.id("projects")),
+    actorType: v.union(v.literal("human"), v.literal("agent")),
+    actorId: v.string(),
+    eventType: v.union(
+      v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"),
+      v.literal("task_created"), v.literal("task_updated"),
+      v.literal("comment_created"), v.literal("agent_registered"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"),
+    ),
+    entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
+    entityId: v.string(),
+    summary: v.string(),
+    details: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
+    .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),
+
   users: defineTable({
     uuid: v.string(),
     nombre: v.string(),
@@ -18,13 +152,34 @@ export default defineSchema({
   notes: defineTable({
     uuid: v.string(),
     userId: v.string(), // uuid del usuario
+    workspaceId: v.optional(v.id("workspaces")),
+    projectId: v.optional(v.id("projects")),
+    status: v.optional(v.union(v.literal("open"), v.literal("attended"))),
+    kind: v.optional(v.union(v.literal("note"), v.literal("memory"))),
     title: v.optional(v.string()),
     content: v.string(),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_uuid", ["uuid"])
-    .index("by_userId_and_updatedAt", ["userId", "updatedAt"]),
+    .index("by_userId_and_updatedAt", ["userId", "updatedAt"])
+    .index("by_workspaceId_and_updatedAt", ["workspaceId", "updatedAt"]),
+
+  noteImages: defineTable({
+    workspaceId: v.id("workspaces"),
+    localId: v.optional(v.string()),
+    noteId: v.optional(v.string()), // UUID local de la nota existente
+    projectId: v.optional(v.id("projects")),
+    storageId: v.id("_storage"),
+    filename: v.string(),
+    contentType: v.string(),
+    size: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId_and_localId", ["workspaceId", "localId"])
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
+    .index("by_noteId_and_createdAt", ["noteId", "createdAt"])
+    .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),
 
   // Relaciones entre notas, tipo Obsidian
   noteLinks: defineTable({

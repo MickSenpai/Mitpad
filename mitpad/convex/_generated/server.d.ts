@@ -30,7 +30,10 @@ import type { DataModel } from "./dataModel.js";
 type Env = {
   readonly CONVEX_CLOUD_URL: string;
   readonly CONVEX_SITE_URL: string;
+  readonly CLERK_FRONTEND_API_URL: string | undefined;
   readonly MITPAD_TOKEN: string | undefined;
+  readonly MITPAD_USER_ID: string | undefined;
+  readonly MITPAD_WEB_ALLOWED_EMAIL: string | undefined;
 };
 
 /**
