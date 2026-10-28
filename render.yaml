@@ -6,7 +6,7 @@ services:
       - mitpad.com
     rootDir: mitpad
     buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm run build
-    staticPublishPath: mitpad/build
+    staticPublishPath: build
     autoDeployTrigger: checksPass
     envVars:
       - key: PUBLIC_CONVEX_URL
