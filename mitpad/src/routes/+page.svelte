@@ -54,6 +54,7 @@
     let clerk: ClerkClient | null = null;
     let signInNode: HTMLDivElement;
     let signInMounted = false;
+    let signUpMounted = false;
     let desktopAuthLoaded = false;
     let desktopAuthenticated = false;
     let desktopEmail = '';
@@ -112,7 +113,8 @@
                 if (document.visibilityState === 'visible' && desktopAuthenticated && !busy) void syncNow(true);
             }, 300_000);
         }
-        return () => { if (autoSync) clearInterval(autoSync); clearImageUrls(); clearProjectImageUrls(); if (clerk && signInMounted && signInNode) clerk.unmountSignIn(signInNode); if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode); };
+        window.addEventListener('hashchange', handleAuthRoute);
+        return () => { window.removeEventListener('hashchange', handleAuthRoute); if (autoSync) clearInterval(autoSync); clearImageUrls(); clearProjectImageUrls(); if (clerk && signInMounted && signInNode) clerk.unmountSignIn(signInNode); if (clerk && signUpMounted && signInNode) clerk.unmountSignUp(signInNode); if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode); };
     });
 
     async function initializeDesktopAuth() {
@@ -135,15 +137,8 @@
             // mount target before Clerk tries to attach its sign-in UI.
             desktopAuthLoaded = true;
             await tick();
-            if (signInNode && !signInMounted) {
-                try {
-                    clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance: { options: { socialButtonsPlacement: 'top', socialButtonsVariant: 'blockButton' }, variables: { colorPrimary: '#95e8d3', colorPrimaryForeground: '#101917', colorBackground: '#111820', colorForeground: '#f1f5f9', colorMutedForeground: '#b9c5d0', colorInput: '#0b1118', colorInputForeground: '#f1f5f9', colorBorder: '#35414e', colorNeutral: '#35414e', colorRing: '#80dfc5', borderRadius: '0.6rem' } } });
-                    signInMounted = true;
-                    error = '';
-                } catch (e) {
-                    error = `No se pudo mostrar el inicio de sesión de Clerk: ${e}`;
-                }
-            }
+            await tick();
+            await mountAuthComponent();
             return;
         }
         try {
@@ -154,12 +149,33 @@
             desktopAuthenticated = true;
             desktopAuthLoaded = true;
             if (signInMounted && signInNode) { clerk.unmountSignIn(signInNode); signInMounted = false; }
+            if (signUpMounted && signInNode) { clerk.unmountSignUp(signInNode); signUpMounted = false; }
             status = { ...(status ?? { pending: 0, failed: 0, last_error: null, last_sync_at: null }), configured: true };
             if (!wasAuthenticated) {
                 await loadWorkspace();
                 await syncNow(true);
             }
         } catch (e) { desktopAuthenticated = false; desktopAuthLoaded = true; error = `No se autorizó el acceso al workspace: ${e}`; }
+    }
+
+    function handleAuthRoute() {
+        if (!clerk?.session) void mountAuthComponent();
+    }
+
+    async function mountAuthComponent() {
+        if (!clerk || !signInNode) return;
+        const wantsSignUp = window.location.hash.startsWith('#/sign-up');
+        if ((wantsSignUp && signUpMounted) || (!wantsSignUp && signInMounted)) return;
+        if (signInMounted) { clerk.unmountSignIn(signInNode); signInMounted = false; }
+        if (signUpMounted) { clerk.unmountSignUp(signInNode); signUpMounted = false; }
+        const appearance = { options: { socialButtonsPlacement: 'top', socialButtonsVariant: 'blockButton' }, variables: { colorPrimary: '#95e8d3', colorPrimaryForeground: '#101917', colorBackground: '#111820', colorForeground: '#f1f5f9', colorMutedForeground: '#b9c5d0', colorInput: '#0b1118', colorInputForeground: '#f1f5f9', colorBorder: '#35414e', colorNeutral: '#35414e', colorRing: '#80dfc5', borderRadius: '0.6rem' } };
+        if (wantsSignUp) {
+            clerk.mountSignUp(signInNode, { routing: 'hash', signInUrl: '#/sign-in', appearance });
+            signUpMounted = true;
+        } else {
+            clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance });
+            signInMounted = true;
+        }
     }
 
     async function signOutDesktop() { await clerk?.signOut(); }

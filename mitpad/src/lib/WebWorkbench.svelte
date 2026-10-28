@@ -16,6 +16,7 @@
     let client: ConvexHttpClient | null = null;
     let signInNode: HTMLDivElement;
     let signInMounted = false;
+    let signUpMounted = false;
     let showProfile = false;
     let profileNode: HTMLDivElement;
     let profileMounted = false;
@@ -40,7 +41,8 @@
         client = new ConvexHttpClient(PUBLIC_CONVEX_URL);
         void initialize();
         timer = setInterval(() => { if (connected && document.visibilityState === 'visible' && !busy) void refresh(true); }, 300_000);
-        return () => { clearInterval(timer); unsubscribe?.(); if (clerk && signInMounted && signInNode) clerk.unmountSignIn(signInNode); if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode); };
+        window.addEventListener('hashchange', handleAuthRoute);
+        return () => { window.removeEventListener('hashchange', handleAuthRoute); clearInterval(timer); unsubscribe?.(); if (clerk && signInMounted && signInNode) clerk.unmountSignIn(signInNode); if (clerk && signUpMounted && signInNode) clerk.unmountSignUp(signInNode); if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode); };
     });
 
     async function initialize() {
@@ -58,10 +60,7 @@
         if (!clerk.session) {
             client.clearAuth(); connected = false; clearData();
             await tick();
-            if (signInNode && !signInMounted) {
-                clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance: { options: { socialButtonsPlacement: 'top', socialButtonsVariant: 'blockButton' }, variables: { colorPrimary: '#95e8d3', colorPrimaryForeground: '#101917', colorBackground: '#111820', colorForeground: '#f1f5f9', colorMutedForeground: '#b9c5d0', colorInput: '#0b1118', colorInputForeground: '#f1f5f9', colorBorder: '#35414e', colorNeutral: '#35414e', colorRing: '#80dfc5', borderRadius: '0.6rem' } } });
-                signInMounted = true;
-            }
+            await mountAuthComponent();
             return;
         }
         try {
@@ -70,8 +69,29 @@
             client.setAuth(jwt);
             await client.mutation(api.web.asegurarWorkspace, {});
             if (signInMounted && signInNode) { clerk.unmountSignIn(signInNode); signInMounted = false; }
+            if (signUpMounted && signInNode) { clerk.unmountSignUp(signInNode); signUpMounted = false; }
             await refresh(true);
         } catch (e) { connected = false; error = `No se autorizó el acceso al workspace: ${message(e)}`; }
+    }
+
+    function handleAuthRoute() {
+        if (!clerk?.session) void mountAuthComponent();
+    }
+
+    async function mountAuthComponent() {
+        if (!clerk || !signInNode) return;
+        const wantsSignUp = window.location.hash.startsWith('#/sign-up');
+        if ((wantsSignUp && signUpMounted) || (!wantsSignUp && signInMounted)) return;
+        if (signInMounted) { clerk.unmountSignIn(signInNode); signInMounted = false; }
+        if (signUpMounted) { clerk.unmountSignUp(signInNode); signUpMounted = false; }
+        const appearance = { options: { socialButtonsPlacement: 'top', socialButtonsVariant: 'blockButton' }, variables: { colorPrimary: '#95e8d3', colorPrimaryForeground: '#101917', colorBackground: '#111820', colorForeground: '#f1f5f9', colorMutedForeground: '#b9c5d0', colorInput: '#0b1118', colorInputForeground: '#f1f5f9', colorBorder: '#35414e', colorNeutral: '#35414e', colorRing: '#80dfc5', borderRadius: '0.6rem' } };
+        if (wantsSignUp) {
+            clerk.mountSignUp(signInNode, { routing: 'hash', signInUrl: '#/sign-in', appearance });
+            signUpMounted = true;
+        } else {
+            clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance });
+            signInMounted = true;
+        }
     }
 
     async function refresh(quiet = false) {
