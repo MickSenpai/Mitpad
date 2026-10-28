@@ -12,6 +12,8 @@ jobs:
   frontend:
     name: Frontend (SvelteKit)
     runs-on: ubuntu-latest
+    env:
+      PUBLIC_CONVEX_URL: https://ci-placeholder.convex.cloud
     defaults:
       run:
         working-directory: mitpad
