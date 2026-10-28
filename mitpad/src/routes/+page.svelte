@@ -137,7 +137,7 @@
             await tick();
             if (signInNode && !signInMounted) {
                 try {
-                    clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance: { variables: { colorPrimary: '#80dfc5', colorBackground: '#151d26', colorText: '#e6edf3', colorInputBackground: '#10161e', colorInputText: '#e6edf3' } } });
+                    clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance: { options: { socialButtonsPlacement: 'top', socialButtonsVariant: 'blockButton' }, variables: { colorPrimary: '#95e8d3', colorPrimaryForeground: '#101917', colorBackground: '#111820', colorForeground: '#f1f5f9', colorMutedForeground: '#b9c5d0', colorInput: '#0b1118', colorInputForeground: '#f1f5f9', colorBorder: '#35414e', colorNeutral: '#35414e', colorRing: '#80dfc5', borderRadius: '0.6rem' } } });
                     signInMounted = true;
                     error = '';
                 } catch (e) {
@@ -671,7 +671,7 @@
     :global(button) { cursor: pointer; }
     .desktop-auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 0,#1b2c37 0,transparent 55%),#0e1117; }
     .desktop-auth-card { width: min(460px,100%); padding: 30px; border: 1px solid #2b3743; border-radius: 14px; background: #141b23; box-shadow: 0 20px 80px #0005; }
-    .desktop-auth-card h1 { margin: 6px 0 8px; font-size: 25px; }.desktop-auth-card p { color: #8998a8; font-size: 12px; line-height: 1.6; margin: 0; }
+    .desktop-auth-card h1 { margin: 6px 0 8px; font-size: 25px; color: #f1f5f9; }.desktop-auth-card p { color: #b5c1cc; font-size: 12px; line-height: 1.6; margin: 0; }
     .desktop-clerk-widget { margin-top: 20px; }.desktop-auth-error { display:block; color:#ffb4ad; margin-top:12px; }.user-email { color:#91a0ae; font-size:10px; }
     .profile-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:24px; background:#05080dcc; }.profile-dialog { width:min(920px,100%); max-height:min(90vh,900px); overflow:auto; padding:0; color:#e6edf3; border:1px solid #34414e; border-radius:14px; background:#111820; box-shadow:0 24px 90px #0009; }.profile-dialog>header { position:sticky; top:0; z-index:1; display:flex; justify-content:space-between; align-items:center; padding:16px 20px; background:#111820; border-bottom:1px solid #293541; }.profile-dialog h2 { margin:0; font-size:17px; }.profile-dialog .eyebrow { margin:0 0 4px; }.profile-mount { min-height:520px; padding:14px; }
     .app-shell { display: grid; grid-template-columns: 244px minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
