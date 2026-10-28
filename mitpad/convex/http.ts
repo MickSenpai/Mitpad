@@ -86,6 +86,31 @@ const handler = httpAction(async (ctx, request) => {
     if (request.method === "GET" && path === "/api/v1/projects") {
       return json(await ctx.runQuery(internal.workbench.proyectosAgente, { workspaceId: agent.workspaceId }));
     }
+    if (request.method === "GET" && path === "/api/v1/project-links") {
+      return json(await ctx.runQuery(internal.projectLinks.listarAgente, { workspaceId: agent.workspaceId }));
+    }
+    if (request.method === "POST" && path === "/api/v1/project-links") {
+      const body = await readBody(request); if (!body) return fail("JSON inválido.", 400);
+      const sourceProjectId = str(body, "source_project_id", 100, true)! as Id<"projects">;
+      const targetProjectId = str(body, "target_project_id", 100, true)! as Id<"projects">;
+      const relationType = enumValue(str(body, "relation_type", 30, true), ["related_to", "parent_of", "depends_on"] as const, "relation_type")!;
+      const description = str(body, "description", 1000);
+      return json(await ctx.runMutation(internal.projectLinks.crearAgente, {
+        workspaceId: agent.workspaceId, agentId: agent.id, sourceProjectId, targetProjectId,
+        relationType, ...(description === undefined ? {} : { description }),
+      }), 201);
+    }
+    if (request.method === "GET" && path === "/api/v1/knowledge") {
+      const projectRaw = url.searchParams.get("project_id") ?? undefined;
+      const kindRaw = url.searchParams.get("kind") ?? undefined;
+      const kinds = ["module", "function", "data", "capability", "integration", "decision"] as const;
+      if (kindRaw && !kinds.includes(kindRaw as typeof kinds[number])) return fail("kind inválido.", 400);
+      return json(await ctx.runQuery(internal.knowledge.listarAgente, {
+        workspaceId: agent.workspaceId,
+        ...(projectRaw ? { projectId: projectRaw as Id<"projects"> } : {}),
+        ...(kindRaw ? { kind: kindRaw as typeof kinds[number] } : {}),
+      }));
+    }
     if (request.method === "POST" && path === "/api/v1/projects") {
       const body = await readBody(request); if (!body) return fail("JSON inválido.", 400);
       const name = str(body, "name", 120, true)!;

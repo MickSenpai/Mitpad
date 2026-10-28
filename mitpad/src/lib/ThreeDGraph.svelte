@@ -13,6 +13,7 @@
     let pitch = 0.22;
     let zoom = 1;
     let drag: { x: number; y: number; moved: boolean; pointerId: number } | null = null;
+    let hoveredNodeId = '';
     let projected: { node: GraphNode; x: number; y: number; scale: number; depth: number }[] = [];
     let width = 900;
     let height = 560;
@@ -75,11 +76,6 @@
             const from = byId.get(link.source_project_id), to = byId.get(link.target_project_id);
             if (from && to) {
                 edge(ctx, from, to, 'rgba(202, 157, 255, .78)', true);
-                if (link.description) {
-                    ctx.save(); ctx.font = '10px Inter, system-ui, sans-serif'; ctx.textAlign = 'center'; ctx.fillStyle = '#d1b8e8';
-                    const label = link.description.length > 58 ? `${link.description.slice(0, 56)}…` : link.description;
-                    ctx.fillText(label, (from.x + to.x) / 2, (from.y + to.y) / 2 - 8); ctx.restore();
-                }
             }
         }
         projected.sort((a, b) => b.depth - a.depth);
@@ -92,7 +88,10 @@
             ctx.strokeStyle = node.kind === 'project' ? '#8ce8d1' : node.kind === 'knowledge' ? '#c496e9' : node.status === 'blocked' ? '#ff927f' : '#7da8e7'; ctx.lineWidth = node.kind === 'project' ? 2 : 1.4; ctx.stroke();
             ctx.font = `${node.kind === 'project' ? '600' : '400'} ${Math.max(10, 12 * Math.min(1.15, scale))}px Inter, system-ui, sans-serif`;
             ctx.textAlign = 'center'; ctx.fillStyle = node.kind === 'project' ? '#d8f7ec' : node.kind === 'knowledge' ? '#d7c6e8' : '#b8c5d2';
-            ctx.fillText(node.label.length > 25 ? `${node.label.slice(0, 23)}…` : node.label, x, y + radius + 18);
+            if (node.kind === 'project' || node.id === hoveredNodeId) {
+                const label = node.label.length > 25 ? `${node.label.slice(0, 23)}…` : node.label;
+                ctx.fillText(label, x, y + radius + 18);
+            }
         }
     }
 
@@ -111,7 +110,13 @@
         canvas.setPointerCapture(event.pointerId);
     }
     function pointerMove(event: PointerEvent) {
-        if (!drag) return;
+        if (!drag) {
+            const rect = canvas.getBoundingClientRect();
+            const hit = [...projected].reverse().find((item) => Math.hypot(item.x - (event.clientX - rect.left), item.y - (event.clientY - rect.top)) < (item.node.kind === 'project' ? 28 : 20));
+            const next = hit?.node.id ?? '';
+            if (next !== hoveredNodeId) { hoveredNodeId = next; draw(); }
+            return;
+        }
         const dx = event.clientX - drag.x, dy = event.clientY - drag.y;
         if (Math.abs(dx) + Math.abs(dy) > 2) drag.moved = true;
         yaw += dx * .008; pitch = Math.max(-1.1, Math.min(1.1, pitch + dy * .006));
@@ -127,18 +132,26 @@
         drag = null;
     }
     function resetView() { yaw = -.55; pitch = .22; zoom = 1; draw(); }
+    function changeZoom(factor: number) { zoom = Math.max(.55, Math.min(2.4, zoom * factor)); draw(); }
+    function handleWheel(event: WheelEvent) {
+        event.preventDefault();
+        const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 16 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? height : 1;
+        zoom = Math.max(.55, Math.min(2.4, zoom * Math.exp(-event.deltaY * unit * .0015)));
+        draw();
+    }
 </script>
 
 <div class="graph-shell">
-    <div class="graph-toolbar"><span>Arrastra para orbitar · rueda para acercar · selecciona un nodo</span><button type="button" on:click={resetView}>Restablecer vista</button></div>
-    <canvas bind:this={canvas} aria-label="Grafo tridimensional de proyectos y tareas" on:pointerdown={pointerDown} on:pointermove={pointerMove} on:pointerup={pointerUp} on:pointercancel={() => drag = null} on:wheel|nonpassive={(event) => { event.preventDefault(); zoom = Math.max(.55, Math.min(2.4, zoom * (event.deltaY < 0 ? 1.08 : .92))); draw(); }}></canvas>
+    <div class="graph-toolbar"><span>Arrastra para orbitar · usa +/− o la rueda para acercar · selecciona un nodo</span><div class="zoom-controls"><button type="button" aria-label="Alejar mapa" on:click={() => changeZoom(.82)}>−</button><input aria-label="Nivel de zoom" type="range" min="0.55" max="2.4" step="0.01" bind:value={zoom} on:input={draw} /><span>{Math.round(zoom * 100)}%</span><button type="button" aria-label="Acercar mapa" on:click={() => changeZoom(1.22)}>＋</button><button type="button" on:click={resetView}>Restablecer</button></div></div>
+    <canvas bind:this={canvas} aria-label="Grafo tridimensional de proyectos y tareas" on:pointerdown={pointerDown} on:pointermove={pointerMove} on:pointerup={pointerUp} on:pointercancel={() => drag = null} on:wheel|nonpassive={handleWheel}></canvas>
     <div class="graph-legend"><span><i class="project"></i>Proyecto</span><span><i class="task"></i>Tarea</span><span><i class="knowledge"></i>Función, dato o módulo</span><span><i class="relation"></i>Relación descrita</span><span>{nodes.length} elementos</span></div>
-    <div class="graph-accessible" aria-label="Elementos del mapa">{#each nodes as node (node.id)}<button type="button" on:click={() => onSelect(node)}>{node.kind === 'project' ? 'Proyecto' : node.kind === 'knowledge' ? `${node.knowledgeKind ?? 'Conocimiento'} · ${node.source ?? ''}` : `Tarea · ${node.status ?? ''}`} — {node.label}</button>{/each}</div>
+    <details class="graph-accessible"><summary>Lista de elementos ({nodes.length})</summary><div>{#each nodes as node (node.id)}<button type="button" on:click={() => onSelect(node)}>{node.kind === 'project' ? 'Proyecto' : node.kind === 'knowledge' ? node.knowledgeKind ?? 'Conocimiento' : `Tarea · ${node.status ?? ''}`} — {node.label}</button>{/each}</div></details>
 </div>
 
 <style>
     .graph-shell { min-height: 65vh; overflow: hidden; border-radius: 9px; background: radial-gradient(ellipse at 50% 42%,#1a2832 0,#111820 70%); }
     .graph-toolbar,.graph-legend { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #92a0af; padding: 12px 16px; font-size: 11px; }
+    .zoom-controls { display:flex; align-items:center; gap:8px; flex:none; }.zoom-controls input { width:110px; accent-color:#80dfc5; }.zoom-controls span { min-width:38px; text-align:center; font-variant-numeric:tabular-nums; }
     .graph-toolbar button { color: #b5e8dc; background: #1a2a2c; border: 1px solid #314b49; border-radius: 6px; padding: 6px 9px; cursor: pointer; }
     canvas { width: 100%; height: min(68vh, 680px); min-height: 440px; display: block; cursor: grab; touch-action: none; }
     canvas:active { cursor: grabbing; }
@@ -149,7 +162,7 @@
     .graph-legend i.task { background: #202c3a; border-color: #7da8e7; }
     .graph-legend i.knowledge { background: #33253f; border-color: #c496e9; }
     .graph-legend i.relation { width: 20px; height: 0; border: 0; border-top: 2px dashed #ca9fff; border-radius: 0; }
-    .graph-accessible { display: flex; gap: 5px; flex-wrap: wrap; max-height: 82px; overflow: auto; padding: 0 16px 12px; }
+    .graph-accessible { padding: 0 16px 12px; color:#8f9dab; font-size:10px; }.graph-accessible summary { cursor:pointer; padding:5px 0 8px; }.graph-accessible>div { display:flex; gap:5px; flex-wrap:wrap; max-height:110px; overflow:auto; }
     .graph-accessible button { color: #a8b6c4; background: #19212b; border: 1px solid #2b3846; border-radius: 5px; font-size: 10px; padding: 5px 7px; cursor: pointer; }
-    @media (max-width: 600px) { .graph-toolbar { align-items: flex-start; flex-direction: column; } canvas { min-height: 400px; } }
+    @media (max-width: 600px) { .graph-toolbar { align-items: flex-start; flex-direction: column; }.zoom-controls { width:100%; flex-wrap:wrap; }.zoom-controls input { flex:1; min-width:80px; } canvas { min-height: 400px; } }
 </style>

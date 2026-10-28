@@ -27,6 +27,7 @@ pub struct ProjectImage {
     pub filename: String,
     pub content_type: String,
     pub size: usize,
+    pub cloud_image_id: Option<String>,
     pub created_at: i64,
 }
 
@@ -208,6 +209,7 @@ pub fn save_project_image(
         filename: filename.trim().to_owned(),
         content_type,
         size: content.len(),
+        cloud_image_id: None,
         created_at: ahora_ms(),
     };
     conn.execute(
@@ -228,7 +230,7 @@ pub fn list_project_images(
         .lock()
         .map_err(|_| "Error al bloquear SQLite".to_string())?;
     let mut stmt = conn
-        .prepare("SELECT id, project_id, filename, content_type, length(content), created_at FROM project_images WHERE project_id = ?1 ORDER BY created_at DESC")
+        .prepare("SELECT id, project_id, filename, content_type, length(content), cloud_image_id, created_at FROM project_images WHERE project_id = ?1 ORDER BY created_at DESC")
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([project_id], |r| {
@@ -238,7 +240,8 @@ pub fn list_project_images(
                 filename: r.get(2)?,
                 content_type: r.get(3)?,
                 size: r.get::<_, i64>(4)? as usize,
-                created_at: r.get(5)?,
+                cloud_image_id: r.get(5)?,
+                created_at: r.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;

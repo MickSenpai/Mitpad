@@ -5,17 +5,21 @@
   "description": "",
   "type": "module",
   "scripts": {
-    "dev": "vite dev",
+    "dev": "svelte-kit sync && vite dev",
     "build": "vite build",
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+    "mcp": "node ./mcp/mitpad-mcp.mjs",
     "tauri": "tauri"
   },
   "license": "MIT",
   "dependencies": {
     "@clerk/clerk-js": "^6.41.0",
-    "@tauri-apps/api": "^2"
+    "@clerk/ui": "^1.42.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@tauri-apps/api": "^2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.6",

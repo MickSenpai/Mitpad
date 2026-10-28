@@ -278,7 +278,7 @@ pub fn sync_status(state: State<'_, DbState>) -> Result<SyncStatus, Error> {
         .map_err(|e| e.to_string())?;
     let pending_images: i64 = conn
         .query_row(
-            "SELECT count(*) FROM note_images WHERE cloud_image_id IS NULL",
+            "SELECT (SELECT count(*) FROM note_images WHERE cloud_image_id IS NULL) + (SELECT count(*) FROM project_images WHERE cloud_image_id IS NULL)",
             [],
             |r| r.get(0),
         )
@@ -326,7 +326,8 @@ pub fn sync_status(state: State<'_, DbState>) -> Result<SyncStatus, Error> {
         failed,
         last_error,
         last_sync_at,
-        configured: crate::sync::config::leer_config().is_some(),
+        // La sesión Clerk y la URL de Convex las administra el cliente.
+        configured: false,
     })
 }
 

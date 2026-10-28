@@ -110,7 +110,12 @@ export const registrarUso = internalMutation({
   returns: v.null(),
   handler: async (ctx, { agentId }) => {
     const agent = await ctx.db.get(agentId);
-    if (agent?.active) await ctx.db.patch(agentId, { lastSeenAt: Date.now() });
+    const now = Date.now();
+    // Agent APIs can be called repeatedly by MCP clients; avoid a write for
+    // every tool call while keeping the displayed presence reasonably fresh.
+    if (agent?.active && (!agent.lastSeenAt || now - agent.lastSeenAt >= 60_000)) {
+      await ctx.db.patch(agentId, { lastSeenAt: now });
+    }
     return null;
   },
 });

@@ -1,5 +1,5 @@
 import { ConvexError, v } from "convex/values";
-import { internalMutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { exigirToken, userIdPersonal } from "./acceso";
@@ -73,6 +73,19 @@ export const listar = query({
     if (!workspace) return [];
     const rows = await ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", (q) => q.eq("workspaceId", workspace._id)).take(1000);
     return rows.filter((item) => (!args.projectId || item.projectId === args.projectId) && (!args.kind || item.kind === args.kind)).map((item) => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags, updatedAt: item.updatedAt }));
+  },
+});
+
+export const listarAgente = internalQuery({
+  args: { workspaceId: v.id("workspaces"), projectId: v.optional(v.id("projects")), kind: v.optional(kind) },
+  returns: v.array(output),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db.query("projectKnowledge")
+      .withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", args.workspaceId))
+      .take(1000);
+    return rows
+      .filter(item => (!args.projectId || item.projectId === args.projectId) && (!args.kind || item.kind === args.kind))
+      .map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags, updatedAt: item.updatedAt }));
   },
 });
 

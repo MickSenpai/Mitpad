@@ -167,6 +167,7 @@ export default defineSchema({
 
   noteImages: defineTable({
     workspaceId: v.id("workspaces"),
+    localId: v.optional(v.string()),
     noteId: v.optional(v.string()), // UUID local de la nota existente
     projectId: v.optional(v.id("projects")),
     storageId: v.id("_storage"),
@@ -175,6 +176,7 @@ export default defineSchema({
     size: v.number(),
     createdAt: v.number(),
   })
+    .index("by_workspaceId_and_localId", ["workspaceId", "localId"])
     .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
     .index("by_noteId_and_createdAt", ["noteId", "createdAt"])
     .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),

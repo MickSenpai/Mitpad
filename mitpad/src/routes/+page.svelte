@@ -1,5 +1,8 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
+    import { onMount, tick } from 'svelte';
+    import type { Clerk as ClerkClient } from '@clerk/clerk-js';
+    import { ui } from '@clerk/ui';
+    import { PUBLIC_CONVEX_URL } from '$env/static/public';
     import ThreeDGraph from '$lib/ThreeDGraph.svelte';
     import WebWorkbench from '$lib/WebWorkbench.svelte';
     import {
@@ -45,8 +48,18 @@
     let graphKnowledge: ProjectKnowledge[] = [];
     let selectedKnowledge: ProjectKnowledge | null = null;
     let graphFilter: 'all' | 'projects' | 'tasks' | 'knowledge' = 'all';
+    let graphProjectFilter = '';
     let graphSearch = '';
     let isDesktop = false;
+    let clerk: ClerkClient | null = null;
+    let signInNode: HTMLDivElement;
+    let signInMounted = false;
+    let desktopAuthLoaded = false;
+    let desktopAuthenticated = false;
+    let desktopEmail = '';
+    let showProfile = false;
+    let profileNode: HTMLDivElement;
+    let profileMounted = false;
     let notes: Note[] = [];
     let selectedNote: Note | null = null;
     let status: SyncStatus | null = null;
@@ -82,23 +95,89 @@
     $: visibleTasks = tasks.filter((t) => `${t.title} ${t.description}`.toLowerCase().includes(search.trim().toLowerCase()));
     $: visibleGraphNodes = graphNodes.filter((node) => {
         const filterMatches = graphFilter === 'all' || graphFilter === 'projects' && node.kind === 'project' || graphFilter === 'tasks' && (node.kind === 'project' || node.kind === 'task') || graphFilter === 'knowledge' && (node.kind === 'project' || node.kind === 'knowledge');
+        const projectMatches = !graphProjectFilter || node.projectId === graphProjectFilter;
         const query = graphSearch.trim().toLowerCase();
         const matchesSearch = !query || `${node.label} ${node.summary ?? ''} ${(node.tags ?? []).join(' ')}`.toLowerCase().includes(query);
         const neededAsParent = node.kind === 'project' && !!query && graphNodes.some((child) => child.projectId === node.id && child.kind !== 'project' && filterMatches && `${child.label} ${child.summary ?? ''} ${(child.tags ?? []).join(' ')}`.toLowerCase().includes(query));
-        return filterMatches && (matchesSearch || neededAsParent);
+        return filterMatches && projectMatches && (matchesSearch || neededAsParent);
     });
+    $: visibleGraphLinks = projectLinks.filter((link) => !graphProjectFilter || link.source_project_id === graphProjectFilter || link.target_project_id === graphProjectFilter);
 
     onMount(() => {
         isDesktop = '__TAURI_INTERNALS__' in window;
         let autoSync: ReturnType<typeof setInterval> | undefined;
         if (isDesktop) {
-            void loadWorkspace();
+            void initializeDesktopAuth();
             autoSync = setInterval(() => {
-                if (document.visibilityState === 'visible' && status?.configured && !busy) void syncNow(true);
+                if (document.visibilityState === 'visible' && desktopAuthenticated && !busy) void syncNow(true);
             }, 300_000);
         }
-        return () => { if (autoSync) clearInterval(autoSync); clearImageUrls(); clearProjectImageUrls(); };
+        return () => { if (autoSync) clearInterval(autoSync); clearImageUrls(); clearProjectImageUrls(); if (clerk && signInMounted && signInNode) clerk.unmountSignIn(signInNode); if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode); };
     });
+
+    async function initializeDesktopAuth() {
+        try {
+            if (!PUBLIC_CONVEX_URL || !import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) throw new Error('Falta PUBLIC_CONVEX_URL o VITE_CLERK_PUBLISHABLE_KEY.');
+            const { Clerk } = await import('@clerk/clerk-js');
+            clerk = new Clerk(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
+            await clerk.load({ ui });
+            clerk.addListener(() => { void syncDesktopIdentity(); });
+            await syncDesktopIdentity();
+        } catch (e) { error = `No se pudo iniciar Clerk: ${e}`; desktopAuthLoaded = true; }
+    }
+
+    async function syncDesktopIdentity() {
+        if (!clerk) return;
+        if (!clerk.session) {
+            desktopAuthenticated = false;
+            desktopEmail = '';
+            // Render the signed-out branch first so bind:this has created the
+            // mount target before Clerk tries to attach its sign-in UI.
+            desktopAuthLoaded = true;
+            await tick();
+            if (signInNode && !signInMounted) {
+                try {
+                    clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance: { variables: { colorPrimary: '#80dfc5', colorBackground: '#151d26', colorText: '#e6edf3', colorInputBackground: '#10161e', colorInputText: '#e6edf3' } } });
+                    signInMounted = true;
+                    error = '';
+                } catch (e) {
+                    error = `No se pudo mostrar el inicio de sesión de Clerk: ${e}`;
+                }
+            }
+            return;
+        }
+        try {
+            const wasAuthenticated = desktopAuthenticated;
+            const token = await clerk.session.getToken();
+            if (!token) throw new Error('Clerk no entregó un token de sesión.');
+            desktopEmail = clerk.user?.primaryEmailAddress?.emailAddress ?? 'Cuenta Clerk';
+            desktopAuthenticated = true;
+            desktopAuthLoaded = true;
+            if (signInMounted && signInNode) { clerk.unmountSignIn(signInNode); signInMounted = false; }
+            status = { ...(status ?? { pending: 0, failed: 0, last_error: null, last_sync_at: null }), configured: true };
+            if (!wasAuthenticated) {
+                await loadWorkspace();
+                await syncNow(true);
+            }
+        } catch (e) { desktopAuthenticated = false; desktopAuthLoaded = true; error = `No se autorizó el acceso al workspace: ${e}`; }
+    }
+
+    async function signOutDesktop() { await clerk?.signOut(); }
+
+    async function openProfile() {
+        showProfile = true;
+        await tick();
+        if (clerk && profileNode && !profileMounted) {
+            clerk.mountUserProfile(profileNode);
+            profileMounted = true;
+        }
+    }
+
+    function closeProfile() {
+        if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode);
+        profileMounted = false;
+        showProfile = false;
+    }
 
     async function loadWorkspace() {
         try {
@@ -115,10 +194,13 @@
         if (busy || (automatic && document.visibilityState !== 'visible')) return;
         busy = true; error = ''; notice = '';
         try {
+            if (!clerk?.session || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión con Clerk antes de sincronizar.');
+            const token = await clerk.session.getToken();
+            if (!token) throw new Error('Clerk no entregó un token de sesión.');
             await retryFailedSync();
-            const sent = await syncWorkbenchNow();
+            const sent = await syncWorkbenchNow(PUBLIC_CONVEX_URL, token);
             await loadWorkspace();
-            status = await getSyncStatus();
+            status = { ...(await getSyncStatus()), configured: true };
             if (!automatic) notice = sent ? `Sincronización completada: ${sent} registros enviados.` : 'No había cambios pendientes para enviar.';
         } catch (e) { error = `No se pudo sincronizar: ${e}`; }
         finally { busy = false; }
@@ -137,17 +219,20 @@
     }
 
     async function removeProjectRelation(id: string) {
-        try { await deleteProjectLink(id); projectLinks = await listProjectLinks(); }
+        try { const token = await clerk?.session?.getToken(); if (!token || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión con Clerk para cambiar relaciones.'); await deleteProjectLink(id, PUBLIC_CONVEX_URL, token); projectLinks = await listProjectLinks(); }
         catch (e) { error = `No se pudo quitar la relación: ${e}`; }
     }
 
     async function openGraph() {
         view = 'graph';
         try {
+            if (graphProjectFilter && !projects.some((project) => project.id === graphProjectFilter)) graphProjectFilter = '';
+            const token = await clerk?.session?.getToken();
+            if (!token || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión con Clerk para cargar el mapa compartido.');
             projectLinks = await listProjectLinks();
             const [groups, knowledge] = await Promise.all([
                 Promise.all(projects.map((project) => listTasks(project.id))),
-                listProjectKnowledge()
+                listProjectKnowledge(PUBLIC_CONVEX_URL, token)
             ]);
             graphTasks = groups.flat();
             graphKnowledge = knowledge;
@@ -241,17 +326,19 @@
         if (oversized) { projectImageNotice = `${oversized.name} supera el límite de 10 MB.`; return; }
         busy = true;
         projectImageNotice = '';
+        let syncAfterSave = false;
         try {
             for (const file of files) {
                 await saveProjectImage(selectedProjectId, file.name, file.type, new Uint8Array(await file.arrayBuffer()));
             }
             await loadProjectImages(selectedProjectId);
+            syncAfterSave = desktopAuthenticated;
             notice = files.length === 1 ? 'Imagen guardada en la galería del proyecto.' : `${files.length} imágenes guardadas en la galería del proyecto.`;
         } catch (e) {
             const message = `${e}`;
             await loadProjectImages(selectedProjectId);
             projectImageNotice = message;
-        } finally { busy = false; }
+        } finally { busy = false; if (syncAfterSave) void syncNow(true); }
     }
 
     async function removeProjectImage(image: ProjectImage) {
@@ -386,12 +473,14 @@
         if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(file.type)) { imageNotice = 'Usa una imagen JPEG, PNG, WebP o GIF.'; return; }
         if (file.size > 10 * 1024 * 1024) { imageNotice = 'La imagen supera el límite de 10 MB.'; return; }
         busy = true; imageNotice = '';
+        let syncAfterSave = false;
         try {
             await saveNoteImage(selectedNote.id, file.name, file.type, new Uint8Array(await file.arrayBuffer()));
             await loadNoteImages(selectedNote.id);
-            imageNotice = status?.configured ? 'Imagen guardada localmente; subida a la nube pendiente.' : 'Imagen guardada localmente y disponible sin conexión.';
+            syncAfterSave = desktopAuthenticated;
+            imageNotice = desktopAuthenticated ? 'Imagen guardada; sincronizando con la nube…' : 'Imagen guardada localmente y disponible sin conexión.';
             status = await getSyncStatus();
-        } catch (e) { imageNotice = `${e}`; } finally { busy = false; }
+        } catch (e) { imageNotice = `${e}`; } finally { busy = false; if (syncAfterSave) void syncNow(true); }
     }
 
     async function removeImage(id: string) {
@@ -421,6 +510,10 @@
 
 {#if !isDesktop}
     <WebWorkbench />
+{:else if !desktopAuthLoaded}
+    <main class="desktop-auth-screen"><section class="desktop-auth-card"><div class="brand-mark">M</div><h1>Conectando con Clerk</h1><p>Preparando el acceso seguro a tu workspace.</p></section></main>
+{:else if !desktopAuthenticated}
+    <main class="desktop-auth-screen"><section class="desktop-auth-card"><div class="eyebrow">MITPAD · ACCESO SEGURO</div><h1>Inicia sesión</h1><p>Usa la misma cuenta Clerk que en la versión web para abrir tu workspace compartido.</p><div class="desktop-clerk-widget" bind:this={signInNode}></div>{#if error}<small class="desktop-auth-error">{error}</small>{/if}</section></main>
 {:else}
 <div class="app-shell">
     <aside class="sidebar">
@@ -453,7 +546,7 @@
     <main class="main-area">
         <header class="topbar">
             <div class="breadcrumbs"><span>Workspace</span>{#if activeProject}<span class="crumb-sep">/</span><strong>{activeProject.name}</strong>{/if}</div>
-            <div class="top-actions"><span class="sync-pill" title={status?.last_error ?? (status?.last_sync_at ? `Última sincronización ${new Date(status.last_sync_at).toLocaleString()}` : 'Sin sincronizaciones todavía')}>{#if status?.configured}{#if status.failed > 0}⚠ {status.failed} fallidos{:else if status.pending > 0}{status.pending} pendientes{:else}● Sincronizado{/if}{:else}● Local{/if}</span><button class="secondary" on:click={() => void syncNow()} disabled={busy || !status?.configured}>{busy ? 'Sincronizando…' : 'Sincronizar'}</button><button class="avatar-button" title="Perfil piloto">P</button></div>
+            <div class="top-actions"><span class="user-email">{desktopEmail}</span><span class="sync-pill" title={status?.last_error ?? (status?.last_sync_at ? `Última sincronización ${new Date(status.last_sync_at).toLocaleString()}` : 'Sincronización automática cada 5 minutos')}>{#if status?.configured}{#if status.failed > 0}⚠ {status.failed} fallidos{:else if status.pending > 0}{status.pending} pendientes{:else}● Sincronizado{/if}{:else}● Local{/if}</span><button class="secondary" on:click={() => void syncNow()} disabled={busy || !desktopAuthenticated}>{busy ? 'Sincronizando…' : 'Sincronizar'}</button><button class="secondary" on:click={() => void openProfile()}>Perfil</button><button class="avatar-button" title="Cerrar sesión de Clerk" on:click={() => void signOutDesktop()}>Salir</button></div>
         </header>
 
         {#if error}<div class="toast error-toast">{error}<button on:click={() => error = ''}>×</button></div>{/if}
@@ -554,9 +647,9 @@
             </section>
         {:else if view === 'graph'}
             <section class="page-content"><div class="page-heading"><div><p class="eyebrow">MAPA DEL WORKSPACE</p><h1>Grafo de proyectos</h1><p class="subtitle">Explora tareas, módulos, funciones, datos e integraciones. Arrastra para orbitar.</p></div><button class="secondary" on:click={() => void openGraph()}>Actualizar mapa</button></div>
-                <div class="graph-controls panel"><select aria-label="Filtrar elementos del mapa" bind:value={graphFilter}><option value="all">Todos: proyectos, tareas y conocimiento</option><option value="projects">Proyectos</option><option value="tasks">Proyectos y tareas</option><option value="knowledge">Proyectos y conocimiento</option></select><input bind:value={graphSearch} placeholder="Buscar función, dato, módulo…" aria-label="Buscar en el mapa" /><span>{visibleGraphNodes.length} de {graphNodes.length} nodos</span></div>
+                <div class="graph-controls panel"><select aria-label="Proyecto del mapa" bind:value={graphProjectFilter}><option value="">Todos los proyectos</option>{#each projects as project (project.id)}<option value={project.id}>{project.name}</option>{/each}</select><select aria-label="Filtrar elementos del mapa" bind:value={graphFilter}><option value="all">Todos los elementos</option><option value="projects">Solo proyectos</option><option value="tasks">Proyectos y tareas</option><option value="knowledge">Proyectos y conocimiento</option></select><input bind:value={graphSearch} placeholder="Buscar nodo…" aria-label="Buscar en el mapa" /><span>{visibleGraphNodes.length} / {graphNodes.length}</span></div>
                 {#if selectedKnowledge}<article class="knowledge-detail panel"><div><span class="knowledge-kind">{selectedKnowledge.kind}</span><h2>{selectedKnowledge.title}</h2><p>{selectedKnowledge.summary}</p><small>{selectedKnowledgeProject} · {selectedKnowledge.source}</small><div class="knowledge-tags">{#each selectedKnowledge.tags as tag}<span>{tag}</span>{/each}</div></div><button class="secondary" on:click={() => selectedKnowledge = null}>Cerrar</button></article>{/if}
-                {#if graphNodes.length}<div class="graph-panel panel"><ThreeDGraph nodes={visibleGraphNodes} links={projectLinks} onSelect={(node) => void openGraphNode(node)} /></div>{:else}<div class="empty-state panel"><span>⌘</span><h2>Sin elementos para relacionar</h2><p>Crea proyectos y tareas; aparecerán aquí como un mapa de trabajo.</p></div>{/if}
+                {#if visibleGraphNodes.length}<div class="graph-panel panel"><ThreeDGraph nodes={visibleGraphNodes} links={visibleGraphLinks} onSelect={(node) => void openGraphNode(node)} /></div>{:else}<div class="empty-state panel"><span>⌘</span><h2>Sin elementos para relacionar</h2><p>Cambia el filtro o crea proyectos y tareas para verlos aquí.</p></div>{/if}
             </section>
         {:else if view === 'activity'}
             <section class="page-content"><div class="page-heading"><div><p class="eyebrow">HISTORIAL INMUTABLE</p><h1>Actividad</h1><p class="subtitle">Registro cronológico de cambios, decisiones y conversación.</p></div><span class="sync-pill">{events.length} recientes</span></div><div class="activity-list panel">{#each events as event (event.id)}<article class="activity-item"><span class="event-mark">{event.actor_type === 'agent' ? '⌘' : 'P'}</span><div><strong>{event.event_type.replace('.', ' ')}</strong><p>{event.entity_type} · {event.entity_id.slice(0, 8)} · {event.actor}</p><small>{event.payload}</small></div><time>{formatDate(event.created_at)}</time></article>{/each}{#if events.length === 0}<div class="empty-state"><h2>Aún no hay actividad</h2><p>Los eventos aparecerán aquí al crear proyectos, tareas y comentarios.</p></div>{/if}</div></section>
@@ -568,6 +661,7 @@
         {/if}
     </main>
 </div>
+{#if showProfile}<div class="profile-overlay" role="presentation"><dialog open class="profile-dialog" aria-label="Perfil de usuario"><header><div><p class="eyebrow">CUENTA CLERK</p><h2>Mi perfil</h2></div><button class="secondary" on:click={closeProfile}>Cerrar</button></header><div class="profile-mount" bind:this={profileNode}></div></dialog></div>{/if}
 {/if}
 
 <style>
@@ -575,6 +669,11 @@
     :global(body) { margin: 0; background: #0e1117; color: #e6edf3; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; }
     :global(button), :global(input), :global(textarea), :global(select) { font: inherit; }
     :global(button) { cursor: pointer; }
+    .desktop-auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 0,#1b2c37 0,transparent 55%),#0e1117; }
+    .desktop-auth-card { width: min(460px,100%); padding: 30px; border: 1px solid #2b3743; border-radius: 14px; background: #141b23; box-shadow: 0 20px 80px #0005; }
+    .desktop-auth-card h1 { margin: 6px 0 8px; font-size: 25px; }.desktop-auth-card p { color: #8998a8; font-size: 12px; line-height: 1.6; margin: 0; }
+    .desktop-clerk-widget { margin-top: 20px; }.desktop-auth-error { display:block; color:#ffb4ad; margin-top:12px; }.user-email { color:#91a0ae; font-size:10px; }
+    .profile-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:24px; background:#05080dcc; }.profile-dialog { width:min(920px,100%); max-height:min(90vh,900px); overflow:auto; padding:0; color:#e6edf3; border:1px solid #34414e; border-radius:14px; background:#111820; box-shadow:0 24px 90px #0009; }.profile-dialog>header { position:sticky; top:0; z-index:1; display:flex; justify-content:space-between; align-items:center; padding:16px 20px; background:#111820; border-bottom:1px solid #293541; }.profile-dialog h2 { margin:0; font-size:17px; }.profile-dialog .eyebrow { margin:0 0 4px; }.profile-mount { min-height:520px; padding:14px; }
     .app-shell { display: grid; grid-template-columns: 244px minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
     .sidebar { background: #11161e; border-right: 1px solid #242b36; display: flex; flex-direction: column; padding: 19px 13px 12px; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
     .brand { display: flex; align-items: center; gap: 10px; color: #f0f4f8; text-decoration: none; font-size: 17px; font-weight: 700; padding: 0 8px 28px; letter-spacing: -0.4px; }
@@ -602,7 +701,7 @@
     .main-area { min-width: 0; min-height: 0; height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
     .topbar { height: 60px; flex: none; padding: 0 30px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #242b36; background: #11161e; }
     .breadcrumbs { display: flex; gap: 10px; align-items: center; color: #758294; font-size: 12px; }.breadcrumbs strong { color: #dbe3ec; font-weight: 600; }.crumb-sep { color: #3e4957; }
-    .top-actions { display: flex; align-items: center; gap: 15px; }.sync-pill { color: #8e9baa; background: #171e27; border: 1px solid #2a3441; padding: 6px 10px; border-radius: 20px; font-size: 11px; }.avatar-button { border: 0; }
+    .top-actions { display: flex; align-items: center; gap: 15px; }.sync-pill { color: #8e9baa; background: #171e27; border: 1px solid #2a3441; padding: 6px 10px; border-radius: 20px; font-size: 11px; }.avatar-button { border: 0; width:auto; height:auto; border-radius:6px; padding:7px 10px; color:#b8c8ff; background:#303b52; }
     .page-content { width: 100%; max-width: 1500px; min-height: 0; flex: 1; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #35404d transparent; margin: 0 auto; padding: 34px 34px 60px; }
     .page-heading { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin-bottom: 26px; }.page-heading h1 { font-size: 27px; letter-spacing: -.8px; margin: 2px 0 7px; }.eyebrow { color: #7890a3; font-size: 10px; letter-spacing: 1.3px; font-weight: 700; margin: 0 0 7px; }.subtitle { color: #8b98a7; margin: 0; font-size: 13px; }.heading-icon { width: 48px; height: 48px; border: 1px solid #2a3846; background: #15212a; color: #8ce8d1; display: grid; place-items: center; border-radius: 13px; font-size: 21px; }
     .panel { background: #141a22; border: 1px solid #27313d; border-radius: 11px; }

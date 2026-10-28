@@ -22,16 +22,6 @@ pub fn run() {
 
             app.manage(DbState(std::sync::Mutex::new(conn)));
 
-            // 2. Extraemos la ruta exacta de la base de datos para dársela al Worker
-            let db_path = app_handle
-                .path()
-                .app_data_dir()
-                .expect("No se pudo resolver el directorio de datos de la app")
-                .join("mitpad_local.db");
-
-            // 3. Encendemos el Worker pasándole la ruta
-            sync::worker::start_background_worker(db_path);
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -41,7 +31,6 @@ pub fn run() {
             db::queries::list_notes,
             db::queries::sync_status,
             db::queries::retry_failed,
-            sync::pull::pull_notes,
             sync::workbench::sync_workbench_now,
             sync::workbench::list_project_knowledge,
             sync::workbench::delete_project_link,

@@ -108,7 +108,8 @@ export async function listLocalNotes(): Promise<Note[]> {
 
 // 7. Estado de la sincronización
 export async function getSyncStatus(): Promise<SyncStatus> {
-    return await invoke('sync_status');
+    const status = await invoke<SyncStatus>('sync_status');
+    return { ...status, configured: true };
 }
 
 // 8. Devuelve a la cola las operaciones que fallaron
@@ -116,18 +117,13 @@ export async function retryFailedSync(): Promise<number> {
     return await invoke('retry_failed');
 }
 
-// 9. Trae las notas de la nube y las fusiona con las locales
-export async function pullCloudNotes(userId: string): Promise<Note[]> {
-    return await invoke('pull_notes', { userId: userId });
-}
-
 export const createProject = (name: string, description: string) => invoke<Project>('create_project', { name, description });
 export const listProjects = () => invoke<Project[]>('list_projects');
 export const listProjectLinks = () => invoke<ProjectLink[]>('list_project_links');
 export const createProjectLink = (sourceProjectId: string, targetProjectId: string, relationType: ProjectLink['relation_type'], description: string) =>
     invoke<ProjectLink>('create_project_link', { sourceProjectId, targetProjectId, relationType, description });
-export const deleteProjectLink = (id: string) => invoke<void>('delete_project_link', { id });
-export const listProjectKnowledge = () => invoke<ProjectKnowledge[]>('list_project_knowledge');
+export const deleteProjectLink = (id: string, convexUrl: string, token: string) => invoke<void>('delete_project_link', { id, convexUrl, token });
+export const listProjectKnowledge = (convexUrl: string, token: string) => invoke<ProjectKnowledge[]>('list_project_knowledge', { convexUrl, token });
 export const createTask = (projectId: string, title: string, description: string, priority: Task['priority'], assigneeAgentId: string | null = null, dueAt: number | null = null) =>
     invoke<Task>('create_task', { projectId, title, description, priority, assigneeAgentId, dueAt });
 export const listTasks = (projectId: string) => invoke<Task[]>('list_tasks', { projectId });
@@ -160,4 +156,4 @@ export async function readProjectImage(id: string): Promise<Uint8Array> {
     return new Uint8Array(bytes);
 }
 export const deleteProjectImage = (id: string) => invoke<void>('delete_project_image', { id });
-export const syncWorkbenchNow = (): Promise<number> => invoke('sync_workbench_now');
+export const syncWorkbenchNow = (convexUrl: string, token: string): Promise<number> => invoke('sync_workbench_now', { convexUrl, token });

@@ -10,6 +10,7 @@
 
 import type * as acceso from "../acceso.js";
 import type * as agents from "../agents.js";
+import type * as desktopSync from "../desktopSync.js";
 import type * as http from "../http.js";
 import type * as images from "../images.js";
 import type * as knowledge from "../knowledge.js";
@@ -31,6 +32,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   acceso: typeof acceso;
   agents: typeof agents;
+  desktopSync: typeof desktopSync;
   http: typeof http;
   images: typeof images;
   knowledge: typeof knowledge;

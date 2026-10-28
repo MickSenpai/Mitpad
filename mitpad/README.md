@@ -10,8 +10,8 @@ Mitpad is a local-first agent workbench for desktop, built with Tauri, SvelteKit
 - Task priorities, due dates, typed comments and an append-only local activity feed.
 - Editable local agent directory with reversible deactivation. A primary Meido identity is created for assignment and coordination.
 - Notes can be marked as attended and remain available; the desktop UI does not offer note deletion.
-- Persistent notes and image attachments. Images stay in SQLite so they remain available offline. Each image is limited to 10 MB; each note allows up to 200 images and 50 MB total.
-- A project image library for uploading, previewing and deleting visual references independently of notes. It has the same 10 MB per-file, 200-image and 50 MB per-project limits.
+- Persistent notes and image attachments. Images stay in SQLite for offline access and synchronize through Convex Storage. Each image is limited to 10 MB; each note allows up to 200 images and 50 MB total.
+- A project image library for uploading, previewing and deleting visual references independently of notes. Desktop and web images synchronize through Convex Storage, with the same 10 MB per-file, 200-image and 50 MB per-project limits.
 - Existing note synchronization with Convex remains available through the background worker.
 - Convex data model and a REST API for registering agents and letting them read or update projects, tasks, notes, comments and events.
 
@@ -53,6 +53,8 @@ Agent API routes use `/api/v1/` on the Convex site URL. The pilot registers an a
 
 - `GET|POST /api/v1/projects`
 - `PATCH /api/v1/projects/:id`
+- `GET|POST /api/v1/project-links`
+- `GET /api/v1/knowledge?project_id=<id>&kind=<kind>`
 - `GET|POST /api/v1/notes`
 - `PATCH /api/v1/notes/:id` (including project assignment and attended status)
 - `GET|POST /api/v1/tasks`
@@ -64,4 +66,18 @@ Keep agent API keys private. Do not commit the Convex token or credentials. The 
 
 ## Data storage
 
-Notes, workbench records, activity and attached image bytes are stored in Mitpad's local SQLite database. Notes use the offline-first Convex synchronization queue. A project image is associated with the project selected in the image library. Workbench sync uploads projects, tasks, comments and described project links. Desktop project image bytes remain local; the authenticated web image library stores its uploads in Convex Storage. The REST API is not yet exposed through an MCP server.
+Notes, workbench records, activity and attached image bytes are stored in Mitpad's local SQLite database. Notes use the offline-first Convex synchronization queue. Images attached to notes and projects retain a local copy and synchronize to Convex Storage when the desktop is authenticated. The desktop also downloads web images for offline access; the local ID prevents duplicate uploads on later syncs. Project images stay associated with their selected project.
+
+## MCP for OpenCode and other local agents
+
+Mitpad includes a local stdio MCP server that connects to the authenticated agent REST API. It can read technical knowledge, list/create project relationships, list/create/update projects and tasks, read/write notes, add task comments and read recent activity. Each MCP process uses one registered agent's API key; do not use or expose the pilot's master `MITPAD_TOKEN` in OpenCode.
+
+1. Register a dedicated agent once through `POST https://<deployment>.convex.site/api/v1/agents/register` with `Authorization: Bearer <MITPAD_TOKEN>` and JSON fields `name`, `model`, `model_provider`, `client_type`, and `pilot`. For example, use `curl` with those placeholders and `Content-Type: application/json`. The response returns the agent's `api_key` once. Keep it in a password manager or a private environment variable.
+2. Set `MITPAD_CONVEX_SITE_URL` to the deployment's `https://<deployment>.convex.site` URL and `MITPAD_AGENT_API_KEY` to that agent key in the shell that starts OpenCode. Launch OpenCode from that same shell so the MCP child process inherits both values.
+3. Open the repository root in OpenCode. The root `opencode.json` starts `pnpm --dir mitpad run mcp`; no credentials are stored in the repository configuration.
+
+The MCP server speaks the local stdio transport and never writes logs to stdout. Start with read tools such as `mitpad_projects_list` and `mitpad_tasks_list`; create/update tools write to the shared workspace immediately.
+
+## Windows installers
+
+`.github/workflows/windows.yml` builds NSIS `.exe` and WiX `.msi` installers on a Windows runner when manually dispatched or when a `v*` tag is pushed. Configure the public GitHub Actions variables `PUBLIC_CONVEX_URL` and `VITE_CLERK_PUBLISHABLE_KEY` before running it. The workflow uploads installers as an artifact. Public distribution still needs a Windows code-signing certificate and production Clerk/Convex configuration; the workflow does not sign or publish releases.
