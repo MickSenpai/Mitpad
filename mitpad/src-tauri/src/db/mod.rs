@@ -275,7 +275,9 @@ fn migrar_esquema(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE notes ADD COLUMN status TEXT NOT NULL DEFAULT 'open'")?;
     }
     if !tiene_columna(conn, "project_links", "description") {
-        conn.execute_batch("ALTER TABLE project_links ADD COLUMN description TEXT NOT NULL DEFAULT ''")?;
+        conn.execute_batch(
+            "ALTER TABLE project_links ADD COLUMN description TEXT NOT NULL DEFAULT ''",
+        )?;
     }
 
     // 3. Las notas que ya estaban en la nube se marcan como sincronizadas.

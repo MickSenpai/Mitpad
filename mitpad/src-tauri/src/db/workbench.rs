@@ -214,27 +214,81 @@ pub fn list_projects(state: State<'_, DbState>) -> Result<Vec<Project>, Error> {
 
 #[tauri::command]
 pub fn list_project_links(state: State<'_, DbState>) -> Result<Vec<ProjectLink>, Error> {
-    let conn = state.inner().0.lock().map_err(|_| "Error al bloquear SQLite".to_string())?;
+    let conn = state
+        .inner()
+        .0
+        .lock()
+        .map_err(|_| "Error al bloquear SQLite".to_string())?;
     let mut stmt = conn.prepare("SELECT id,source_project_id,target_project_id,relation_type,description,created_at FROM project_links ORDER BY created_at").map_err(|e|e.to_string())?;
-    let rows = stmt.query_map([], |r| Ok(ProjectLink { id:r.get(0)?, source_project_id:r.get(1)?, target_project_id:r.get(2)?, relation_type:r.get(3)?, description:r.get(4)?, created_at:r.get(5)? })).map_err(|e|e.to_string())?;
-    rows.collect::<Result<Vec<_>, _>>().map_err(|e|e.to_string())
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(ProjectLink {
+                id: r.get(0)?,
+                source_project_id: r.get(1)?,
+                target_project_id: r.get(2)?,
+                relation_type: r.get(3)?,
+                description: r.get(4)?,
+                created_at: r.get(5)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn create_project_link(state: State<'_, DbState>, source_project_id: String, target_project_id: String, relation_type: String, description: String) -> Result<ProjectLink, Error> {
-    if source_project_id == target_project_id { return Err("Selecciona dos proyectos distintos.".into()); }
-    if !["related_to", "parent_of", "depends_on"].contains(&relation_type.as_str()) { return Err("Tipo de relación inválido.".into()); }
+pub fn create_project_link(
+    state: State<'_, DbState>,
+    source_project_id: String,
+    target_project_id: String,
+    relation_type: String,
+    description: String,
+) -> Result<ProjectLink, Error> {
+    if source_project_id == target_project_id {
+        return Err("Selecciona dos proyectos distintos.".into());
+    }
+    if !["related_to", "parent_of", "depends_on"].contains(&relation_type.as_str()) {
+        return Err("Tipo de relación inválido.".into());
+    }
     let description = description.trim().to_owned();
-    if description.len() > 1000 { return Err("La descripción de la relación supera 1000 caracteres.".into()); }
-    let conn = state.inner().0.lock().map_err(|_| "Error al bloquear SQLite".to_string())?;
-    let tx = conn.unchecked_transaction().map_err(|e|e.to_string())?;
-    let count: i64 = tx.query_row("SELECT count(*) FROM projects WHERE id IN (?1,?2) AND status='active'", params![source_project_id,target_project_id], |r| r.get(0)).map_err(|e|e.to_string())?;
-    if count != 2 { return Err("Ambos proyectos deben existir y estar activos.".into()); }
-    let link = ProjectLink { id: Uuid::new_v4().to_string(), source_project_id, target_project_id, relation_type, description, created_at: ahora_ms() };
+    if description.len() > 1000 {
+        return Err("La descripción de la relación supera 1000 caracteres.".into());
+    }
+    let conn = state
+        .inner()
+        .0
+        .lock()
+        .map_err(|_| "Error al bloquear SQLite".to_string())?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let count: i64 = tx
+        .query_row(
+            "SELECT count(*) FROM projects WHERE id IN (?1,?2) AND status='active'",
+            params![source_project_id, target_project_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if count != 2 {
+        return Err("Ambos proyectos deben existir y estar activos.".into());
+    }
+    let link = ProjectLink {
+        id: Uuid::new_v4().to_string(),
+        source_project_id,
+        target_project_id,
+        relation_type,
+        description,
+        created_at: ahora_ms(),
+    };
     tx.execute("INSERT INTO project_links(id,source_project_id,target_project_id,relation_type,description,created_at) VALUES(?1,?2,?3,?4,?5,?6) ON CONFLICT(source_project_id,target_project_id) DO UPDATE SET relation_type=excluded.relation_type,description=excluded.description", params![link.id,link.source_project_id,link.target_project_id,link.relation_type,link.description,link.created_at]).map_err(|e|e.to_string())?;
     let saved = tx.query_row("SELECT id,source_project_id,target_project_id,relation_type,description,created_at FROM project_links WHERE source_project_id=?1 AND target_project_id=?2", params![link.source_project_id,link.target_project_id], |r| Ok(ProjectLink{id:r.get(0)?,source_project_id:r.get(1)?,target_project_id:r.get(2)?,relation_type:r.get(3)?,description:r.get(4)?,created_at:r.get(5)?})).map_err(|e|e.to_string())?;
-    record_event(&tx, Some(&saved.source_project_id), "project.linked", "project_link", &saved.id, json!({"target_project_id":saved.target_project_id,"relation_type":saved.relation_type,"description":saved.description}))?;
-    tx.commit().map_err(|e|e.to_string())?;
+    record_event(
+        &tx,
+        Some(&saved.source_project_id),
+        "project.linked",
+        "project_link",
+        &saved.id,
+        json!({"target_project_id":saved.target_project_id,"relation_type":saved.relation_type,"description":saved.description}),
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(saved)
 }
 
