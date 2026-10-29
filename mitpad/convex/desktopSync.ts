@@ -19,7 +19,7 @@ export const snapshot = query({
     tasks: v.array(v.object({ id: v.id("tasks"), clientId: v.union(v.string(), v.null()), projectId: v.id("projects"), title: v.string(), description: v.string(), status: taskStatus, priority, assigneeAgentId: v.union(v.id("agents"), v.null()), dueAt: v.union(v.number(), v.null()), createdAt: v.number(), updatedAt: v.number() })),
     comments: v.array(v.object({ id: v.id("taskComments"), clientId: v.union(v.string(), v.null()), projectId: v.id("projects"), taskId: v.id("tasks"), authorType: v.union(v.literal("human"), v.literal("agent")), authorId: v.string(), kind: v.union(v.literal("message"), v.literal("instruction"), v.literal("question"), v.literal("answer"), v.literal("decision"), v.literal("update")), content: v.string(), createdAt: v.number() })),
     links: v.array(v.object({ id: v.id("projectLinks"), clientId: v.union(v.string(), v.null()), sourceProjectId: v.id("projects"), targetProjectId: v.id("projects"), relationType, description: v.string(), createdAt: v.number() })),
-    notes: v.array(v.object({ uuid: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), createdAt: v.number(), updatedAt: v.number() })),
+    notes: v.array(v.object({ uuid: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), createdAt: v.number(), updatedAt: v.number(), deletedAt: v.union(v.number(), v.null()) })),
     knowledge: v.array(v.object({ id: v.id("projectKnowledge"), projectId: v.id("projects"), kind: v.union(v.literal("module"), v.literal("function"), v.literal("data"), v.literal("capability"), v.literal("integration"), v.literal("decision")), title: v.string(), summary: v.string(), source: v.string(), tags: v.array(v.string()), updatedAt: v.number() })),
     images: v.array(v.object({ id: v.id("noteImages"), localId: v.union(v.string(), v.null()), noteId: v.union(v.string(), v.null()), projectId: v.union(v.id("projects"), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), createdAt: v.number(), url: v.union(v.string(), v.null()) })),
   }),
@@ -31,7 +31,7 @@ export const snapshot = query({
       ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", ws._id)).order("desc").take(1000),
       ctx.db.query("taskComments").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", ws._id)).order("desc").take(1000),
       ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", ws._id)).order("desc").take(1000),
-      ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", ws._id)).order("desc").take(500),
+      ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", ws._id)).order("desc").take(1000),
       ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", ws._id)).take(1000),
       ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", ws._id)).order("desc").take(500),
     ]);
@@ -41,7 +41,7 @@ export const snapshot = query({
       tasks: tasks.map(t => ({ id: t._id, clientId: t.clientId ?? null, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, dueAt: t.dueAt ?? null, createdAt: t.createdAt, updatedAt: t.updatedAt })),
       comments: comments.map(c => ({ id: c._id, clientId: c.clientId ?? null, projectId: c.projectId, taskId: c.taskId, authorType: c.authorType, authorId: c.authorId, kind: c.kind, content: c.content, createdAt: c.createdAt })),
       links: links.map(l => ({ id: l._id, clientId: l.clientId ?? null, sourceProjectId: l.sourceProjectId, targetProjectId: l.targetProjectId, relationType: l.relationType, description: l.description ?? "", createdAt: l.createdAt })),
-      notes: notes.map(n => ({ uuid: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, createdAt: n.createdAt, updatedAt: n.updatedAt })),
+      notes: notes.map(n => ({ uuid: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, createdAt: n.createdAt, updatedAt: n.updatedAt, deletedAt: n.deletedAt ?? null })),
       knowledge: knowledge.map(k => ({ id: k._id, projectId: k.projectId, kind: k.kind, title: k.title, summary: k.summary, source: k.source, tags: k.tags, updatedAt: k.updatedAt })),
       images: await Promise.all(images.map(async image => ({ id: image._id, localId: image.localId ?? null, noteId: image.noteId ?? null, projectId: image.projectId ?? null, filename: image.filename, contentType: image.contentType, size: image.size, createdAt: image.createdAt, url: await ctx.storage.getUrl(image.storageId) }))),
     };
@@ -65,7 +65,7 @@ export const registerImage = mutation({
     if (!args.noteId && !args.projectId) throw new ConvexError("La imagen debe pertenecer a una nota o proyecto.");
     if (args.noteId) {
       const note = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", args.noteId!)).unique();
-      if (!note || note.workspaceId !== ws._id) throw new ConvexError("La nota no pertenece al workspace.");
+      if (!note || note.workspaceId !== ws._id || note.deletedAt !== undefined) throw new ConvexError("La nota no pertenece al workspace.");
     }
     if (args.projectId) {
       const project = await ctx.db.get(args.projectId);
@@ -147,12 +147,35 @@ export const upsertNote = mutation({
     const { workspace: ws, identity } = await workspace(ctx);
     const current = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", args.uuid)).unique();
     if (current && current.workspaceId !== ws._id) throw new ConvexError("La nota no pertenece al workspace.");
+    if (current?.deletedAt !== undefined) return args.uuid;
     if (current) {
       if (args.updatedAt >= current.updatedAt) await ctx.db.patch(current._id, { title: args.title ?? undefined, content: args.content, status: args.status, updatedAt: args.updatedAt });
       return args.uuid;
     }
     await ctx.db.insert("notes", { uuid: args.uuid, userId: identity.tokenIdentifier, workspaceId: ws._id, kind: "note", title: args.title ?? undefined, content: args.content, status: args.status, createdAt: args.createdAt, updatedAt: args.updatedAt });
     return args.uuid;
+  },
+});
+
+/** Propaga al workspace la eliminación solicitada desde el escritorio autenticado. */
+export const deleteNote = mutation({
+  args: { uuid: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { uuid }) => {
+    const { workspace: ws } = await workspace(ctx);
+    const note = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", uuid)).unique();
+    if (!note) return true;
+    if (note.workspaceId !== ws._id) throw new ConvexError("La nota no pertenece al workspace.");
+    if (note.deletedAt !== undefined) return true;
+    for await (const link of ctx.db.query("noteLinks").withIndex("by_sourceNoteId_and_targetNoteId", q => q.eq("sourceNoteId", uuid))) await ctx.db.delete("noteLinks", link._id);
+    for await (const link of ctx.db.query("noteLinks").withIndex("by_targetNoteId", q => q.eq("targetNoteId", uuid))) await ctx.db.delete("noteLinks", link._id);
+    for await (const image of ctx.db.query("noteImages").withIndex("by_noteId_and_createdAt", q => q.eq("noteId", uuid))) {
+      await ctx.storage.delete(image.storageId);
+      await ctx.db.delete("noteImages", image._id);
+    }
+    const now = Date.now();
+    await ctx.db.patch("notes", note._id, { title: undefined, content: "", projectId: undefined, deletedAt: now, updatedAt: now });
+    return true;
   },
 });
 

@@ -100,6 +100,7 @@ export async function updateLocalNote(id: string, title: string, content: string
 }
 
 export const markNoteAttended = (id: string) => invoke<Note>('mark_note_attended', { id });
+export const deleteLocalNote = (id: string) => invoke<boolean>('delete_note', { id });
 
 // 6. Todas las notas locales (la más reciente primero)
 export async function listLocalNotes(): Promise<Note[]> {

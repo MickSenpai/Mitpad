@@ -231,6 +231,27 @@ pub fn mark_note_attended(state: State<'_, DbState>, id: String) -> Result<Note,
     })
 }
 
+#[tauri::command]
+pub fn delete_note(state: State<'_, DbState>, id: String) -> Result<bool, Error> {
+    let conn = bloquear(state)?;
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    let exists: bool = tx
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes WHERE id=?1)",
+            [&id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if !exists {
+        return Ok(false);
+    }
+    tx.execute("DELETE FROM notes WHERE id=?1", [&id])
+        .map_err(|e| e.to_string())?;
+    encolar(&tx, "DELETE", "notes", &id, &json!({"id": id}))?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
 /// Todas las notas locales, la más reciente primero.
 #[tauri::command]
 pub fn list_notes(state: State<'_, DbState>) -> Result<Vec<Note>, Error> {

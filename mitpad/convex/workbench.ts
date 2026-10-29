@@ -28,7 +28,7 @@ const commentValidator = v.object({
 });
 const eventValidator = v.object({
   id: v.id("activityEvents"), workspaceId: v.id("workspaces"), projectId: v.union(v.id("projects"), v.null()),
-  actorType, actorId: v.string(), eventType: v.union(v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("task_created"), v.literal("task_updated"), v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked")),
+  actorType, actorId: v.string(), eventType: v.union(v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("task_created"), v.literal("task_updated"), v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted")),
   entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
   entityId: v.string(), summary: v.string(), details: v.union(v.string(), v.null()), createdAt: v.number(),
 });
@@ -353,7 +353,7 @@ export const notasAgente = internalQuery({
   handler: async (ctx, { workspaceId, agentId }) => {
     await ensureAgent(ctx, workspaceId, agentId);
     const notes = await ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", (q) => q.eq("workspaceId", workspaceId)).order("desc").take(500);
-    return notes.map(publicAgentNote);
+    return notes.filter((note) => note.deletedAt === undefined).map(publicAgentNote);
   },
 });
 
@@ -379,7 +379,7 @@ export const actualizarNotaAgente = internalMutation({
   handler: async (ctx, args) => {
     const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);
     const note = await ctx.db.query("notes").withIndex("by_uuid", (q) => q.eq("uuid", args.id)).unique();
-    if (!note || note.workspaceId !== args.workspaceId) throw new Error("La nota no pertenece a este espacio.");
+    if (!note || note.workspaceId !== args.workspaceId || note.deletedAt !== undefined) throw new Error("La nota no pertenece a este espacio.");
     if (args.title && args.title.length > 300) throw new Error("El título supera 300 caracteres.");
     if (args.content !== undefined && args.content.length > 500_000) throw new Error("La nota supera 500.000 caracteres.");
     if (args.projectId) await ensureProject(ctx, args.workspaceId, args.projectId);
@@ -392,6 +392,28 @@ export const actualizarNotaAgente = internalMutation({
     await addEvent(ctx, { workspaceId: args.workspaceId, projectId: args.projectId ?? note.projectId, actor: { kind: "agent", id: agent._id }, eventType: "note_updated", entityType: "note", entityId: args.id, summary: `Actualizó la nota ${args.title ?? note.title ?? "sin título"}` });
     const updated = await ctx.db.get(note._id); if (!updated) throw new Error("No se pudo actualizar la nota.");
     return publicAgentNote(updated);
+  },
+});
+
+export const borrarNotaAgente = internalMutation({
+  args: { workspaceId: v.id("workspaces"), agentId: v.id("agents"), id: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);
+    const note = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", args.id)).unique();
+    if (!note) return false;
+    if (note.workspaceId !== args.workspaceId) throw new Error("La nota no pertenece a este espacio.");
+    if (note.deletedAt !== undefined) return true;
+    for await (const link of ctx.db.query("noteLinks").withIndex("by_sourceNoteId_and_targetNoteId", q => q.eq("sourceNoteId", args.id))) await ctx.db.delete("noteLinks", link._id);
+    for await (const link of ctx.db.query("noteLinks").withIndex("by_targetNoteId", q => q.eq("targetNoteId", args.id))) await ctx.db.delete("noteLinks", link._id);
+    for await (const image of ctx.db.query("noteImages").withIndex("by_noteId_and_createdAt", q => q.eq("noteId", args.id))) {
+      await ctx.storage.delete(image.storageId);
+      await ctx.db.delete("noteImages", image._id);
+    }
+    const now = Date.now();
+    await ctx.db.patch("notes", note._id, { title: undefined, content: "", projectId: undefined, deletedAt: now, updatedAt: now });
+    await addEvent(ctx, { workspaceId: args.workspaceId, projectId: note.projectId, actor: { kind: "agent", id: agent._id }, eventType: "note_deleted", entityType: "note", entityId: args.id, summary: `Eliminó la nota ${note.title ?? "sin título"}` });
+    return true;
   },
 });
 

@@ -26,7 +26,7 @@ async function verifyTarget(ctx: QueryCtx | MutationCtx, noteId?: string, projec
   if (!workspace) throw new ConvexError("Primero crea tu espacio personal.");
   if (noteId !== undefined) {
     const note = await ctx.db.query("notes").withIndex("by_uuid", (q) => q.eq("uuid", noteId)).unique();
-    if (!note || note.userId !== userIdPersonal()) throw new ConvexError("La nota no pertenece a este espacio.");
+    if (!note || note.deletedAt !== undefined || note.userId !== userIdPersonal()) throw new ConvexError("La nota no pertenece a este espacio.");
     if (note.workspaceId && note.workspaceId !== workspace._id) throw new ConvexError("La nota está ligada a otro espacio.");
     if (projectId && note.projectId !== projectId) throw new ConvexError("El proyecto no coincide con la nota.");
     if (note.projectId) {

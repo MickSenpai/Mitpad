@@ -10,7 +10,7 @@ export const crear = mutation({
     exigirToken(token);
     for (const nota of [sourceNoteId, targetNoteId]) {
       const existe = await ctx.db.query("notes").withIndex("by_uuid", (q) => q.eq("uuid", nota)).unique();
-      if (!existe) throw new ConvexError(`No existe la nota ${nota}.`);
+      if (!existe || existe.deletedAt !== undefined) throw new ConvexError(`No existe la nota ${nota}.`);
       exigirUsuario(existe.userId);
     }
     const repetido = await ctx.db
@@ -34,7 +34,7 @@ export const borrar = mutation({
     if (!l) return false;
     for (const noteId of [l.sourceNoteId, l.targetNoteId]) {
       const note = await ctx.db.query("notes").withIndex("by_uuid", (q) => q.eq("uuid", noteId)).unique();
-      if (!note) throw new ConvexError("No existe una nota asociada al enlace.");
+      if (!note || note.deletedAt !== undefined) throw new ConvexError("No existe una nota asociada al enlace.");
       exigirUsuario(note.userId);
     }
     await ctx.db.delete("noteLinks", l._id);
@@ -49,7 +49,7 @@ export const deNota = query({
   handler: async (ctx, { token, noteId }) => {
     exigirToken(token);
     const note = await ctx.db.query("notes").withIndex("by_uuid", (q) => q.eq("uuid", noteId)).unique();
-    if (!note) throw new ConvexError("No existe la nota asociada al enlace.");
+    if (!note || note.deletedAt !== undefined) throw new ConvexError("No existe la nota asociada al enlace.");
     exigirUsuario(note.userId);
     const filas = await ctx.db
       .query("noteLinks")

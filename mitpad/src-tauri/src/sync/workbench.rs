@@ -481,7 +481,23 @@ async fn sync_note_queue(client: &mut ConvexClient, db_path: &PathBuf) -> Result
     let mut sent = 0;
     for (queue_id, operation, note_id, payload) in pending {
         if operation == "DELETE" {
-            continue;
+            let mut args = BTreeMap::new();
+            arg(&mut args, "uuid", Value::from(note_id));
+            match client
+                .mutation("desktopSync:deleteNote", args)
+                .await
+                .map_err(|e| e.to_string())?
+            {
+                FunctionResult::Value(_) => {
+                    let db = Connection::open(db_path).map_err(|e| e.to_string())?;
+                    db.execute("DELETE FROM sync_queue WHERE id=?1", [queue_id])
+                        .map_err(|e| e.to_string())?;
+                    sent += 1;
+                    continue;
+                }
+                FunctionResult::ErrorMessage(e) => return Err(e),
+                FunctionResult::ConvexError(e) => return Err(e.message),
+            }
         }
         let payload: serde_json::Value =
             serde_json::from_str(payload.as_deref().ok_or("Nota pendiente sin carga útil.")?)
@@ -767,6 +783,16 @@ async fn pull_cloud_notes(
             continue;
         };
         let id = text_field(&fields, "uuid").ok_or("Nota remota sin id.")?;
+        if number_field(&fields, "deletedAt").is_some() {
+            db.execute(
+                "DELETE FROM sync_queue WHERE table_name='notes' AND record_id=?1",
+                [&id],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM notes WHERE id=?1", [&id])
+                .map_err(|e| e.to_string())?;
+            continue;
+        }
         let updated = number_field(&fields, "updatedAt").unwrap_or_default();
         let current: Option<(i64, Option<i64>)> = db
             .query_row(

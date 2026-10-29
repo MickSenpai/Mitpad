@@ -135,7 +135,7 @@ export const dashboard = query({
       tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
       agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
       events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
-      notes: notes.map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
+      notes: notes.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
       images: await Promise.all(images.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
     };
   },
@@ -276,11 +276,34 @@ export const guardarNota = mutation({
     if (args.projectId) { const p = await ctx.db.get(args.projectId); if (!p || p.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace."); }
     const now = Date.now(); const existing = args.id ? await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", args.id!)).unique() : null;
     if (existing && existing.workspaceId !== workspace._id) throw new ConvexError("La nota no pertenece al workspace.");
+    if (existing?.deletedAt !== undefined) throw new ConvexError("La nota fue eliminada; crea una nota nueva.");
     const noteId = args.id ?? crypto.randomUUID();
     if (existing) await ctx.db.patch(existing._id, { title: args.title.trim() || undefined, content: args.content, projectId: args.projectId ?? undefined, status: args.status ?? existing.status ?? "open", updatedAt: now });
     else await ctx.db.insert("notes", { uuid: noteId, userId: identity.tokenIdentifier, workspaceId: workspace._id, projectId: args.projectId ?? undefined, kind: "note", title: args.title.trim() || undefined, content: args.content, status: args.status ?? "open", createdAt: now, updatedAt: now });
     await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: args.projectId ?? undefined, actorType: "human", actorId: identity.tokenIdentifier, eventType: existing ? "note_updated" : "note_created", entityType: "note", entityId: noteId, summary: `${existing ? "Actualizó" : "Creó"} la nota ${args.title.trim() || "sin título"}`, createdAt: now });
     return noteId;
+  },
+});
+
+export const borrarNota = mutation({
+  args: { id: v.string() },
+  returns: v.boolean(),
+  handler: async (ctx, { id }) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const note = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", id)).unique();
+    if (!note) return false;
+    if (note.workspaceId !== workspace._id) throw new ConvexError("La nota no pertenece al workspace.");
+    if (note.deletedAt !== undefined) return true;
+    for await (const link of ctx.db.query("noteLinks").withIndex("by_sourceNoteId_and_targetNoteId", q => q.eq("sourceNoteId", id))) await ctx.db.delete("noteLinks", link._id);
+    for await (const link of ctx.db.query("noteLinks").withIndex("by_targetNoteId", q => q.eq("targetNoteId", id))) await ctx.db.delete("noteLinks", link._id);
+    for await (const image of ctx.db.query("noteImages").withIndex("by_noteId_and_createdAt", q => q.eq("noteId", id))) {
+      await ctx.storage.delete(image.storageId);
+      await ctx.db.delete("noteImages", image._id);
+    }
+    const now = Date.now();
+    await ctx.db.patch("notes", note._id, { title: undefined, content: "", projectId: undefined, deletedAt: now, updatedAt: now });
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: note.projectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "note_deleted", entityType: "note", entityId: id, summary: `Eliminó la nota ${note.title ?? "sin título"}`, createdAt: now });
+    return true;
   },
 });
 

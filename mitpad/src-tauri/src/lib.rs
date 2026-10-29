@@ -28,6 +28,7 @@ pub fn run() {
             db::queries::create_note,
             db::queries::update_note,
             db::queries::mark_note_attended,
+            db::queries::delete_note,
             db::queries::list_notes,
             db::queries::sync_status,
             db::queries::retry_failed,
