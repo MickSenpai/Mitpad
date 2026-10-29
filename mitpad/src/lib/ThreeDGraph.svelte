@@ -46,6 +46,7 @@
         const cx = width / 2, cy = height / 2;
         const cosY = Math.cos(yaw), sinY = Math.sin(yaw), cosP = Math.cos(pitch), sinP = Math.sin(pitch);
         const max = Math.max(250, ...nodes.map((n) => Math.hypot(n.x, n.y, n.z)));
+        const fitScale = Math.min(1, (Math.min(width * 0.44, height * 0.38)) / max);
         const camera = max * 3.2 / zoom;
         projected = nodes.map((node) => {
             const rx = node.x * cosY - node.z * sinY;
@@ -53,15 +54,15 @@
             const ry = node.y * cosP - rz * sinP;
             const depth = camera + node.y * sinP + rz * cosP;
             const scale = camera / Math.max(1, depth);
-            return { node, x: cx + rx * scale, y: cy + ry * scale, scale, depth };
+            return { node, x: cx + rx * scale * fitScale, y: cy + ry * scale * fitScale, scale, depth };
         });
         // Soft floor grid anchors the depth and makes the orbit controls legible.
         ctx.save(); ctx.strokeStyle = 'rgba(122, 153, 175, .10)'; ctx.lineWidth = 1;
         for (let i = -4; i <= 4; i++) {
-            const p1 = projectPoint(i * max / 4, max * .42, -max, cx, cy, cosY, sinY, cosP, sinP, camera);
-            const p2 = projectPoint(i * max / 4, max * .42, max, cx, cy, cosY, sinY, cosP, sinP, camera);
-            const p3 = projectPoint(-max, max * .42, i * max / 4, cx, cy, cosY, sinY, cosP, sinP, camera);
-            const p4 = projectPoint(max, max * .42, i * max / 4, cx, cy, cosY, sinY, cosP, sinP, camera);
+            const p1 = projectPoint(i * max / 4, max * .42, -max, cx, cy, cosY, sinY, cosP, sinP, camera, fitScale);
+            const p2 = projectPoint(i * max / 4, max * .42, max, cx, cy, cosY, sinY, cosP, sinP, camera, fitScale);
+            const p3 = projectPoint(-max, max * .42, i * max / 4, cx, cy, cosY, sinY, cosP, sinP, camera, fitScale);
+            const p4 = projectPoint(max, max * .42, i * max / 4, cx, cy, cosY, sinY, cosP, sinP, camera, fitScale);
             ctx.beginPath(); ctx.moveTo(p1.x, p1.y); ctx.lineTo(p2.x, p2.y); ctx.stroke();
             ctx.beginPath(); ctx.moveTo(p3.x, p3.y); ctx.lineTo(p4.x, p4.y); ctx.stroke();
         }
@@ -95,10 +96,10 @@
         }
     }
 
-    function projectPoint(x: number, y: number, z: number, cx: number, cy: number, cosY: number, sinY: number, cosP: number, sinP: number, camera: number) {
+    function projectPoint(x: number, y: number, z: number, cx: number, cy: number, cosY: number, sinY: number, cosP: number, sinP: number, camera: number, fitScale: number) {
         const rx = x * cosY - z * sinY, rz = x * sinY + z * cosY;
         const ry = y * cosP - rz * sinP, depth = camera + y * sinP + rz * cosP, scale = camera / Math.max(1, depth);
-        return { x: cx + rx * scale, y: cy + ry * scale };
+        return { x: cx + rx * scale * fitScale, y: cy + ry * scale * fitScale };
     }
 
     function edge(ctx: CanvasRenderingContext2D, a: { x: number; y: number }, b: { x: number; y: number }, color: string, dashed = false) {

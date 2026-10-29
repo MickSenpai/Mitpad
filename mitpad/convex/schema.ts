@@ -144,7 +144,7 @@ export default defineSchema({
     eventType: v.union(
       v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"),
       v.literal("task_created"), v.literal("task_updated"),
-      v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"),
+      v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted"),
     ),
     entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
     entityId: v.string(),
@@ -184,6 +184,7 @@ export default defineSchema({
     workspaceId: v.optional(v.id("workspaces")),
     projectId: v.optional(v.id("projects")),
     status: v.optional(v.union(v.literal("open"), v.literal("attended"))),
+    deletedAt: v.optional(v.number()),
     kind: v.optional(v.union(v.literal("note"), v.literal("memory"))),
     title: v.optional(v.string()),
     content: v.string(),

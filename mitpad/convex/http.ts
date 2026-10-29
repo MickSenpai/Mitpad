@@ -11,7 +11,7 @@ auth.addHttpRoutes(http);
 const CORS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Headers": "Authorization, Content-Type",
-  "Access-Control-Allow-Methods": "GET, POST, PATCH, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
 };
 
 function json(data: unknown, status = 200) {
@@ -149,6 +149,9 @@ const handler = httpAction(async (ctx, request) => {
       return json(note, 201);
     }
     const noteMatch = path.match(/^\/api\/v1\/notes\/([^/]+)$/);
+    if (noteMatch && request.method === "DELETE") {
+      return json(await ctx.runMutation(internal.workbench.borrarNotaAgente, { workspaceId: agent.workspaceId, agentId: agent.id, id: decodeURIComponent(noteMatch[1]) }));
+    }
     if (noteMatch && request.method === "PATCH") {
       const body = await readBody(request); if (!body) return fail("JSON inválido.", 400);
       const title = str(body, "title", 300);
