@@ -1,7 +1,8 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
-    import type { Clerk as ClerkClient } from '@clerk/clerk-js';
-    import { ui } from '@clerk/ui';
+    import { ConvexHttpClient } from 'convex/browser';
+    import { mountAuthBridge, type AuthSession } from '$lib/ConvexAuthIsland';
+    import { api } from '../../convex/_generated/api';
     import { PUBLIC_CONVEX_URL } from '$env/static/public';
     import ThreeDGraph from '$lib/ThreeDGraph.svelte';
     import WebWorkbench from '$lib/WebWorkbench.svelte';
@@ -51,16 +52,15 @@
     let graphProjectFilter = '';
     let graphSearch = '';
     let isDesktop = false;
-    let clerk: ClerkClient | null = null;
-    let signInNode: HTMLDivElement;
-    let signInMounted = false;
-    let signUpMounted = false;
+    let authNode: HTMLDivElement;
+    let authRoot: (() => void) | null = null;
+    let authSignOut: (() => Promise<void>) | null = null;
+    let desktopClient: ConvexHttpClient | null = null;
+    let desktopToken = '';
     let desktopAuthLoaded = false;
     let desktopAuthenticated = false;
     let desktopEmail = '';
     let showProfile = false;
-    let profileNode: HTMLDivElement;
-    let profileMounted = false;
     let notes: Note[] = [];
     let selectedNote: Note | null = null;
     let status: SyncStatus | null = null;
@@ -108,92 +108,46 @@
         isDesktop = '__TAURI_INTERNALS__' in window;
         let autoSync: ReturnType<typeof setInterval> | undefined;
         if (isDesktop) {
-            void initializeDesktopAuth();
             autoSync = setInterval(() => {
                 if (document.visibilityState === 'visible' && desktopAuthenticated && !busy) void syncNow(true);
             }, 300_000);
+            void initializeDesktopAuth();
         }
-        window.addEventListener('hashchange', handleAuthRoute);
-        return () => { window.removeEventListener('hashchange', handleAuthRoute); if (autoSync) clearInterval(autoSync); clearImageUrls(); clearProjectImageUrls(); if (clerk && signInMounted && signInNode) clerk.unmountSignIn(signInNode); if (clerk && signUpMounted && signInNode) clerk.unmountSignUp(signInNode); if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode); };
+        return () => { if (autoSync) clearInterval(autoSync); authRoot?.(); clearImageUrls(); clearProjectImageUrls(); };
     });
 
     async function initializeDesktopAuth() {
         try {
-            if (!PUBLIC_CONVEX_URL || !import.meta.env.VITE_CLERK_PUBLISHABLE_KEY) throw new Error('Falta PUBLIC_CONVEX_URL o VITE_CLERK_PUBLISHABLE_KEY.');
-            const { Clerk } = await import('@clerk/clerk-js');
-            clerk = new Clerk(import.meta.env.VITE_CLERK_PUBLISHABLE_KEY);
-            await clerk.load({ ui });
-            clerk.addListener(() => { void syncDesktopIdentity(); });
-            await syncDesktopIdentity();
-        } catch (e) { error = `No se pudo iniciar Clerk: ${e}`; desktopAuthLoaded = true; }
+            if (!PUBLIC_CONVEX_URL) throw new Error('Falta configurar PUBLIC_CONVEX_URL.');
+            desktopClient = new ConvexHttpClient(PUBLIC_CONVEX_URL);
+            desktopAuthLoaded = true;
+            await tick();
+            authRoot = mountAuthBridge(authNode, PUBLIC_CONVEX_URL, (session) => handleDesktopSession(session));
+        } catch (e) { error = `No se pudo iniciar el acceso: ${e}`; desktopAuthLoaded = true; }
     }
 
-    async function syncDesktopIdentity() {
-        if (!clerk) return;
-        if (!clerk.session) {
-            desktopAuthenticated = false;
-            desktopEmail = '';
-            // Render the signed-out branch first so bind:this has created the
-            // mount target before Clerk tries to attach its sign-in UI.
-            desktopAuthLoaded = true;
-            await tick();
-            await tick();
-            await mountAuthComponent();
-            return;
+    async function handleDesktopSession(session: AuthSession) {
+        authSignOut = session.signOut;
+        if (!session.token || !desktopClient) {
+            desktopAuthenticated = false; desktopToken = ''; desktopEmail = ''; return;
         }
+        desktopEmail = session.email ?? 'Cuenta';
+        desktopClient.setAuth(session.token);
+        if (desktopToken === session.token && desktopAuthenticated) return;
+        const wasAuthenticated = desktopAuthenticated;
+        desktopToken = session.token;
         try {
-            const wasAuthenticated = desktopAuthenticated;
-            const token = await clerk.session.getToken();
-            if (!token) throw new Error('Clerk no entregó un token de sesión.');
-            desktopEmail = clerk.user?.primaryEmailAddress?.emailAddress ?? 'Cuenta Clerk';
-            desktopAuthenticated = true;
-            desktopAuthLoaded = true;
-            if (signInMounted && signInNode) { clerk.unmountSignIn(signInNode); signInMounted = false; }
-            if (signUpMounted && signInNode) { clerk.unmountSignUp(signInNode); signUpMounted = false; }
+            await desktopClient.mutation(api.web.asegurarWorkspace, {});
+            desktopAuthenticated = true; desktopAuthLoaded = true;
             status = { ...(status ?? { pending: 0, failed: 0, last_error: null, last_sync_at: null }), configured: true };
-            if (!wasAuthenticated) {
-                await loadWorkspace();
-                await syncNow(true);
-            }
+            if (!wasAuthenticated) { await loadWorkspace(); await syncNow(true); }
         } catch (e) { desktopAuthenticated = false; desktopAuthLoaded = true; error = `No se autorizó el acceso al workspace: ${e}`; }
     }
 
-    function handleAuthRoute() {
-        if (!clerk?.session) void mountAuthComponent();
-    }
+    async function signOutDesktop() { await authSignOut?.(); }
 
-    async function mountAuthComponent() {
-        if (!clerk || !signInNode) return;
-        const wantsSignUp = window.location.hash.startsWith('#/sign-up');
-        if ((wantsSignUp && signUpMounted) || (!wantsSignUp && signInMounted)) return;
-        if (signInMounted) { clerk.unmountSignIn(signInNode); signInMounted = false; }
-        if (signUpMounted) { clerk.unmountSignUp(signInNode); signUpMounted = false; }
-        const appearance = { options: { socialButtonsPlacement: 'top', socialButtonsVariant: 'blockButton' }, variables: { colorPrimary: '#95e8d3', colorPrimaryForeground: '#101917', colorBackground: '#111820', colorForeground: '#f1f5f9', colorMutedForeground: '#b9c5d0', colorInput: '#0b1118', colorInputForeground: '#f1f5f9', colorBorder: '#35414e', colorNeutral: '#35414e', colorRing: '#80dfc5', borderRadius: '0.6rem' } };
-        if (wantsSignUp) {
-            clerk.mountSignUp(signInNode, { routing: 'hash', signInUrl: '#/sign-in', appearance });
-            signUpMounted = true;
-        } else {
-            clerk.mountSignIn(signInNode, { routing: 'hash', signUpUrl: '#/sign-up', appearance });
-            signInMounted = true;
-        }
-    }
-
-    async function signOutDesktop() { await clerk?.signOut(); }
-
-    async function openProfile() {
-        showProfile = true;
-        await tick();
-        if (clerk && profileNode && !profileMounted) {
-            clerk.mountUserProfile(profileNode);
-            profileMounted = true;
-        }
-    }
-
-    function closeProfile() {
-        if (clerk && profileMounted && profileNode) clerk.unmountUserProfile(profileNode);
-        profileMounted = false;
-        showProfile = false;
-    }
+    async function openProfile() { showProfile = true; }
+    function closeProfile() { showProfile = false; }
 
     async function loadWorkspace() {
         try {
@@ -210,11 +164,9 @@
         if (busy || (automatic && document.visibilityState !== 'visible')) return;
         busy = true; error = ''; notice = '';
         try {
-            if (!clerk?.session || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión con Clerk antes de sincronizar.');
-            const token = await clerk.session.getToken();
-            if (!token) throw new Error('Clerk no entregó un token de sesión.');
+            if (!desktopToken || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión antes de sincronizar.');
             await retryFailedSync();
-            const sent = await syncWorkbenchNow(PUBLIC_CONVEX_URL, token);
+            const sent = await syncWorkbenchNow(PUBLIC_CONVEX_URL, desktopToken);
             await loadWorkspace();
             status = { ...(await getSyncStatus()), configured: true };
             if (!automatic) notice = sent ? `Sincronización completada: ${sent} registros enviados.` : 'No había cambios pendientes para enviar.';
@@ -235,7 +187,7 @@
     }
 
     async function removeProjectRelation(id: string) {
-        try { const token = await clerk?.session?.getToken(); if (!token || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión con Clerk para cambiar relaciones.'); await deleteProjectLink(id, PUBLIC_CONVEX_URL, token); projectLinks = await listProjectLinks(); }
+        try { const token = desktopToken; if (!token || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión para cambiar relaciones.'); await deleteProjectLink(id, PUBLIC_CONVEX_URL, token); projectLinks = await listProjectLinks(); }
         catch (e) { error = `No se pudo quitar la relación: ${e}`; }
     }
 
@@ -243,8 +195,8 @@
         view = 'graph';
         try {
             if (graphProjectFilter && !projects.some((project) => project.id === graphProjectFilter)) graphProjectFilter = '';
-            const token = await clerk?.session?.getToken();
-            if (!token || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión con Clerk para cargar el mapa compartido.');
+            const token = desktopToken;
+            if (!token || !PUBLIC_CONVEX_URL) throw new Error('Inicia sesión para cargar el mapa compartido.');
             projectLinks = await listProjectLinks();
             const [groups, knowledge] = await Promise.all([
                 Promise.all(projects.map((project) => listTasks(project.id))),
@@ -524,12 +476,13 @@
     <meta name="description" content="Memoria y espacio de trabajo compartido para tus agentes." />
 </svelte:head>
 
+{#if isDesktop}<div class="desktop-auth-island" class:auth-hidden={desktopAuthenticated}><section class="desktop-auth-card"><img class="login-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><div class="eyebrow">CUENTA MITPAD</div><h1>Acceso a Mitpad</h1><p>Inicia sesión o crea una cuenta con correo y contraseña.</p><div class="desktop-auth-widget" bind:this={authNode}></div>{#if error}<small class="desktop-auth-error">{error}</small>{/if}</section></div>{/if}
 {#if !isDesktop}
     <WebWorkbench />
 {:else if !desktopAuthLoaded}
-    <main class="desktop-auth-screen"><section class="desktop-auth-card"><img class="brand-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><h1>Conectando con Clerk</h1><p>Preparando el acceso seguro a tu workspace.</p></section></main>
+    <main class="desktop-auth-screen"><section class="desktop-auth-card"><img class="brand-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><h1>Conectando</h1><p>Preparando el acceso seguro a tu workspace.</p></section></main>
 {:else if !desktopAuthenticated}
-    <main class="desktop-auth-screen"><section class="desktop-auth-card"><img class="login-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><div class="eyebrow">MITPAD · ACCESO SEGURO</div><h1>Inicia sesión</h1><p>Usa la misma cuenta Clerk que en la versión web para abrir tu workspace compartido.</p><div class="desktop-clerk-widget" bind:this={signInNode}></div>{#if error}<small class="desktop-auth-error">{error}</small>{/if}</section></main>
+    <main class="desktop-auth-screen"><section class="desktop-auth-card"><h1>Abriendo tu workspace…</h1>{#if error}<small class="desktop-auth-error">{error}</small>{/if}</section></main>
 {:else}
 <div class="app-shell">
     <aside class="sidebar">
@@ -562,7 +515,7 @@
     <main class="main-area">
         <header class="topbar">
             <div class="breadcrumbs"><span>Workspace</span>{#if activeProject}<span class="crumb-sep">/</span><strong>{activeProject.name}</strong>{/if}</div>
-            <div class="top-actions"><span class="user-email">{desktopEmail}</span><span class="sync-pill" title={status?.last_error ?? (status?.last_sync_at ? `Última sincronización ${new Date(status.last_sync_at).toLocaleString()}` : 'Sincronización automática cada 5 minutos')}>{#if status?.configured}{#if status.failed > 0}⚠ {status.failed} fallidos{:else if status.pending > 0}{status.pending} pendientes{:else}● Sincronizado{/if}{:else}● Local{/if}</span><button class="secondary" on:click={() => void syncNow()} disabled={busy || !desktopAuthenticated}>{busy ? 'Sincronizando…' : 'Sincronizar'}</button><button class="secondary" on:click={() => void openProfile()}>Perfil</button><button class="avatar-button" title="Cerrar sesión de Clerk" on:click={() => void signOutDesktop()}>Salir</button></div>
+            <div class="top-actions"><span class="user-email">{desktopEmail}</span><span class="sync-pill" title={status?.last_error ?? (status?.last_sync_at ? `Última sincronización ${new Date(status.last_sync_at).toLocaleString()}` : 'Sincronización automática cada 5 minutos')}>{#if status?.configured}{#if status.failed > 0}⚠ {status.failed} fallidos{:else if status.pending > 0}{status.pending} pendientes{:else}● Sincronizado{/if}{:else}● Local{/if}</span><button class="secondary" on:click={() => void syncNow()} disabled={busy || !desktopAuthenticated}>{busy ? 'Sincronizando…' : 'Sincronizar'}</button><button class="secondary" on:click={() => void openProfile()}>Perfil</button><button class="avatar-button" title="Cerrar sesión" on:click={() => void signOutDesktop()}>Salir</button></div>
         </header>
 
         {#if error}<div class="toast error-toast">{error}<button on:click={() => error = ''}>×</button></div>{/if}
@@ -677,18 +630,19 @@
         {/if}
     </main>
 </div>
-{#if showProfile}<div class="profile-overlay" role="presentation"><dialog open class="profile-dialog" aria-label="Perfil de usuario"><header><div><p class="eyebrow">CUENTA CLERK</p><h2>Mi perfil</h2></div><button class="secondary" on:click={closeProfile}>Cerrar</button></header><div class="profile-mount" bind:this={profileNode}></div></dialog></div>{/if}
+{#if showProfile}<div class="profile-overlay" role="presentation"><dialog open class="profile-dialog" aria-label="Perfil de usuario"><header><div><p class="eyebrow">CUENTA MITPAD</p><h2>Mi perfil</h2></div><button class="secondary" on:click={closeProfile}>Cerrar</button></header><div class="profile-mount"><p>{desktopEmail}</p><button class="secondary" on:click={() => void signOutDesktop()}>Cerrar sesión</button></div></dialog></div>{/if}
 {/if}
 
 <style>
     :global(*) { box-sizing: border-box; }
+    :global(.mitpad-auth-form-wrap){margin-top:20px} :global(.mitpad-auth-form){display:grid;gap:13px} :global(.mitpad-auth-form label){display:grid;gap:7px;color:#c8d2dc;font-size:11px} :global(.mitpad-auth-form input){width:100%;color:#f1f5f9;background:#0b1118;border:1px solid #35414e;border-radius:7px;padding:11px} :global(.mitpad-auth-submit){width:100%;color:#101917;background:#95e8d3;border:0;border-radius:7px;padding:11px;font-weight:800;cursor:pointer} :global(.mitpad-auth-submit:disabled){opacity:.6} :global(.mitpad-auth-switch),:global(.mitpad-auth-session button){margin-top:12px;color:#a4f1dc;background:none;border:0;cursor:pointer} :global(.mitpad-auth-error){color:#ffb9b1;font-size:11px} :global(.mitpad-auth-footnote),:global(.mitpad-auth-status){color:#8f9eac;font-size:10px;line-height:1.6} :global(.mitpad-auth-session){display:flex;align-items:center;justify-content:space-between;gap:10px}
     :global(body) { margin: 0; background: #0e1117; color: #e6edf3; font-family: Inter, ui-sans-serif, system-ui, sans-serif; font-size: 14px; }
     :global(button), :global(input), :global(textarea), :global(select) { font: inherit; }
     :global(button) { cursor: pointer; }
     .desktop-auth-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at 50% 0,#1b2c37 0,transparent 55%),#0e1117; }
     .desktop-auth-card { width: min(460px,100%); padding: 30px; border: 1px solid #2b3743; border-radius: 14px; background: #141b23; box-shadow: 0 20px 80px #0005; }
     .desktop-auth-card h1 { margin: 6px 0 8px; font-size: 25px; color: #f1f5f9; }.desktop-auth-card p { color: #b5c1cc; font-size: 12px; line-height: 1.6; margin: 0; }
-    .desktop-clerk-widget { margin-top: 20px; }.desktop-auth-error { display:block; color:#ffb4ad; margin-top:12px; }.user-email { color:#91a0ae; font-size:10px; }
+    .desktop-auth-island.auth-hidden{display:none}.desktop-auth-island{position:fixed;inset:0;z-index:20;display:grid;place-items:center;background:radial-gradient(ellipse at 50% 0,#1c2b36 0,transparent 58%),#0e1117}.desktop-auth-widget { margin-top: 20px; }.desktop-auth-error { display:block; color:#ffb4ad; margin-top:12px; }.user-email { color:#91a0ae; font-size:10px; }
     .profile-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:24px; background:#05080dcc; }.profile-dialog { width:min(920px,100%); max-height:min(90vh,900px); overflow:auto; padding:0; color:#e6edf3; border:1px solid #34414e; border-radius:14px; background:#111820; box-shadow:0 24px 90px #0009; }.profile-dialog>header { position:sticky; top:0; z-index:1; display:flex; justify-content:space-between; align-items:center; padding:16px 20px; background:#111820; border-bottom:1px solid #293541; }.profile-dialog h2 { margin:0; font-size:17px; }.profile-dialog .eyebrow { margin:0 0 4px; }.profile-mount { min-height:520px; padding:14px; }
     .app-shell { display: grid; grid-template-columns: 244px minmax(0, 1fr); height: 100vh; height: 100dvh; overflow: hidden; }
     .sidebar { background: #11161e; border-right: 1px solid #242b36; display: flex; flex-direction: column; padding: 19px 13px 12px; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }

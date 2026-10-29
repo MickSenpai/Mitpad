@@ -18,8 +18,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com https://img.clerk.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://*.clerk.accounts.dev https://*.clerk.com https://*.convex.cloud https://*.convex.site https://clerk-telemetry.com; frame-src https://*.clerk.accounts.dev https://*.clerk.com",
-      "devCsp": "default-src 'self'; script-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com https://img.clerk.com; font-src 'self' data:; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421 https://*.clerk.accounts.dev https://*.clerk.com https://*.convex.cloud https://*.convex.site https://clerk-telemetry.com; frame-src https://*.clerk.accounts.dev https://*.clerk.com"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.convex.cloud; font-src 'self' data:; connect-src ipc: http://ipc.localhost https://*.convex.cloud https://*.convex.site; frame-src 'none'",
+      "devCsp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.convex.cloud; font-src 'self' data:; connect-src ipc: http://ipc.localhost http://localhost:1420 ws://localhost:1421 https://*.convex.cloud https://*.convex.site; frame-src 'none'"
     }
   },
   "bundle": {

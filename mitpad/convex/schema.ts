@@ -2,9 +2,13 @@
 // (UUID v4, igual que en su SQLite local), así una nota creada sin red conserva
 // su id al subirse. Las fechas son milisegundos desde 1970.
 import { defineSchema, defineTable } from "convex/server";
+import { authTables } from "@convex-dev/auth/server";
 import { v } from "convex/values";
 
+const { users: _authUsers, ...authTablesWithoutUsers } = authTables;
+
 export default defineSchema({
+  ...authTablesWithoutUsers,
   workspaces: defineTable({
     ownerId: v.string(),
     name: v.string(),
@@ -12,13 +16,15 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_ownerId", ["ownerId"]),
 
-  // Clerk identity -> private workspace; preserve legacy ownerId for desktop agents.
+  // Authenticated web accounts map to private workspaces; legacy ownerId remains for desktop agents.
   webAccounts: defineTable({
-    tokenIdentifier: v.string(),
+    tokenIdentifier: v.string(), // sesión actual; se conserva para compatibilidad con Clerk durante transición
+    userId: v.optional(v.id("users")), // identidad estable de Convex Auth, independiente de la sesión
     workspaceId: v.id("workspaces"),
     createdAt: v.number(),
   })
     .index("by_tokenIdentifier", ["tokenIdentifier"])
+    .index("by_userId", ["userId"])
     .index("by_workspaceId", ["workspaceId"]),
 
   agents: defineTable({
@@ -149,14 +155,26 @@ export default defineSchema({
     .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),
 
   users: defineTable({
-    uuid: v.string(),
-    nombre: v.string(),
+    // Campos requeridos por Convex Auth
+    name: v.optional(v.string()),
+    image: v.optional(v.string()),
+    email: v.optional(v.string()),
+    emailVerificationTime: v.optional(v.number()),
+    phone: v.optional(v.string()),
+    phoneVerificationTime: v.optional(v.number()),
+    isAnonymous: v.optional(v.boolean()),
+    // Campos históricos de Mitpad; opcionales para no invalidar usuarios existentes
+    uuid: v.optional(v.string()),
+    nombre: v.optional(v.string()),
     entorno: v.optional(v.string()),
     gustos: v.optional(v.any()),
     odia: v.optional(v.any()),
     proyectos: v.optional(v.any()),
-    createdAt: v.number(),
-  }).index("by_uuid", ["uuid"]),
+    createdAt: v.optional(v.number()),
+  })
+    .index("email", ["email"])
+    .index("phone", ["phone"])
+    .index("by_uuid", ["uuid"]),
 
   notes: defineTable({
     uuid: v.string(),

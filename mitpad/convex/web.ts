@@ -1,6 +1,7 @@
 import { ConvexError, v } from "convex/values";
 import { env, mutation, query } from "./_generated/server";
 import { userIdPersonal } from "./acceso";
+import { getAuthUserId } from "@convex-dev/auth/server";
 import { exigirWeb } from "./webAuth";
 
 const status = v.union(v.literal("backlog"), v.literal("todo"), v.literal("in_progress"), v.literal("review"), v.literal("done"), v.literal("blocked"));
@@ -13,50 +14,41 @@ export const asegurarWorkspace = mutation({
   returns: v.object({ id: v.id("workspaces"), name: v.string() }),
   handler: async (ctx) => {
     const identity = await ctx.auth.getUserIdentity();
-    if (!identity?.tokenIdentifier) throw new ConvexError("Inicia sesión con Clerk.");
+    const userId = await getAuthUserId(ctx);
+    if (!identity?.tokenIdentifier || !userId) throw new ConvexError("Inicia sesión para crear tu workspace.");
 
-    const existing = await ctx.db
-      .query("webAccounts")
-      .withIndex("by_tokenIdentifier", (q) => q.eq("tokenIdentifier", identity.tokenIdentifier))
+    const existing = await ctx.db.query("webAccounts")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
       .unique();
     if (existing) {
       const workspace = await ctx.db.get(existing.workspaceId);
       if (!workspace) throw new ConvexError("El workspace de esta cuenta ya no está disponible.");
+      if (existing.tokenIdentifier !== identity.tokenIdentifier) await ctx.db.patch(existing._id, { tokenIdentifier: identity.tokenIdentifier });
       return { id: workspace._id, name: workspace.name };
     }
 
-    const email = identity.email?.trim().toLowerCase();
+    const email = typeof identity.email === "string" ? identity.email.trim().toLowerCase() : "";
+    const verified = (identity as typeof identity & { emailVerified?: boolean }).emailVerified === true;
     const allowedEmail = env.MITPAD_WEB_ALLOWED_EMAIL?.trim().toLowerCase();
     const legacyWorkspace = await ctx.db.query("workspaces")
       .withIndex("by_ownerId", (q) => q.eq("ownerId", userIdPersonal()))
       .unique();
-    const legacyAccount = legacyWorkspace
-      ? await ctx.db.query("webAccounts")
-          .withIndex("by_workspaceId", (q) => q.eq("workspaceId", legacyWorkspace._id))
-          .unique()
-      : null;
-    let workspace = null;
-    let claimingLegacy = false;
 
-    if (legacyWorkspace && !legacyAccount) {
-      if (!email || !allowedEmail || email !== allowedEmail) {
-        throw new ConvexError("El workspace existente está reservado para su cuenta propietaria.");
-      }
+    // Solo se enlaza el espacio anterior cuando la cuenta demuestra poseer el correo.
+    // Password no activa verificación por defecto; se mantiene aislado hasta configurar email OTP.
+    let workspace = null;
+    if (legacyWorkspace && verified && email && allowedEmail && email === allowedEmail) {
       workspace = legacyWorkspace;
-      claimingLegacy = true;
     } else {
       const now = Date.now();
-      const id = await ctx.db.insert("workspaces", {
-        ownerId: identity.tokenIdentifier,
-        name: "Mi espacio",
-        createdAt: now,
-        updatedAt: now,
+      const workspaceId = await ctx.db.insert("workspaces", {
+        ownerId: userId, name: "Mi espacio", createdAt: now, updatedAt: now,
       });
-      workspace = await ctx.db.get(id);
+      workspace = await ctx.db.get(workspaceId);
     }
     if (!workspace) throw new ConvexError("No se pudo crear el workspace de esta cuenta.");
 
-    if (claimingLegacy) {
+    if (workspace === legacyWorkspace) {
       const legacyNotes = await ctx.db.query("notes")
         .withIndex("by_userId_and_updatedAt", (q) => q.eq("userId", userIdPersonal()))
         .take(500);
@@ -66,9 +58,7 @@ export const asegurarWorkspace = mutation({
     }
 
     await ctx.db.insert("webAccounts", {
-      tokenIdentifier: identity.tokenIdentifier,
-      workspaceId: workspace._id,
-      createdAt: Date.now(),
+      tokenIdentifier: identity.tokenIdentifier, userId, workspaceId: workspace._id, createdAt: Date.now(),
     });
     return { id: workspace._id, name: workspace.name };
   },
