@@ -6,6 +6,7 @@
     import { PUBLIC_CONVEX_URL } from '$env/static/public';
     import ThreeDGraph from '$lib/ThreeDGraph.svelte';
     import WebWorkbench from '$lib/WebWorkbench.svelte';
+    import AccountProfile from '$lib/AccountProfile.svelte';
     import {
         createProject, listProjects, createTask, listTasks, updateTask,
         listProjectLinks, createProjectLink, deleteProjectLink,
@@ -138,6 +139,7 @@
         desktopToken = session.token;
         try {
             await desktopClient.mutation(api.web.asegurarWorkspace, {});
+            await desktopClient.mutation(api.web.vincularDatosAnteriores, {});
             desktopAuthenticated = true; desktopAuthLoaded = true;
             status = { ...(status ?? { pending: 0, failed: 0, last_error: null, last_sync_at: null }), configured: true };
             if (!wasAuthenticated) { await loadWorkspace(); await syncNow(true); }
@@ -630,7 +632,7 @@
         {/if}
     </main>
 </div>
-{#if showProfile}<div class="profile-overlay" role="presentation"><dialog open class="profile-dialog" aria-label="Perfil de usuario"><header><div><p class="eyebrow">CUENTA MITPAD</p><h2>Mi perfil</h2></div><button class="secondary" on:click={closeProfile}>Cerrar</button></header><div class="profile-mount"><p>{desktopEmail}</p><button class="secondary" on:click={() => void signOutDesktop()}>Cerrar sesión</button></div></dialog></div>{/if}
+{#if showProfile && desktopClient}<div class="profile-overlay" role="presentation"><dialog open class="profile-dialog" aria-label="Perfil de usuario"><header><div><p class="eyebrow">CUENTA MITPAD</p><h2>Mi perfil</h2></div><button class="secondary" on:click={closeProfile}>Cerrar</button></header><AccountProfile client={desktopClient} email={desktopEmail} onSignOut={signOutDesktop} /></dialog></div>{/if}
 {/if}
 
 <style>
