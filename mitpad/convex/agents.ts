@@ -53,7 +53,7 @@ export const registrar = mutation({
     const now = Date.now();
     const agentId = await ctx.db.insert("agents", {
       workspaceId, name: args.name.trim(), model: args.model.trim(), modelProvider: args.modelProvider.trim(),
-      clientType: args.clientType.trim(), pilot: args.pilot.trim(), apiKeyHash, active: true, createdAt: now,
+      clientType: args.clientType.trim(), pilot: args.pilot.trim(), apiKeyHash, credentialMode: "mcp", active: true, createdAt: now,
     });
     await ctx.db.insert("activityEvents", {
       workspaceId, actorType: "human", actorId: "pilot", eventType: "agent_registered",

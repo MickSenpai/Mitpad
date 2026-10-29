@@ -85,6 +85,9 @@ const handler = httpAction(async (ctx, request) => {
   if (!agent) return fail("API key inválida o desactivada.", 401);
 
   try {
+    if (request.method === "GET" && path === "/api/v1/agents/me") {
+      return json({ id: agent.id, name: agent.name, workspace_id: agent.workspaceId });
+    }
     if (request.method === "GET" && path === "/api/v1/projects") {
       return json(await ctx.runQuery(internal.workbench.proyectosAgente, { workspaceId: agent.workspaceId }));
     }

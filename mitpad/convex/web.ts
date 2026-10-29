@@ -1,6 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { env, mutation, query } from "./_generated/server";
-import { userIdPersonal } from "./acceso";
+import { hashAgentApiKey, userIdPersonal } from "./acceso";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { exigirWeb } from "./webAuth";
 
@@ -115,7 +115,7 @@ export const vincularDatosAnteriores = mutation({
 
 export const dashboard = query({
   args: {},
-  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), clientType: v.string(), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
+  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), clientType: v.string(), credentialMode: v.union(v.literal("local"), v.literal("mcp"), v.null()), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
   handler: async (ctx) => {
     const { workspace } = await exigirWeb(ctx);
     const [projects, projectLinks, knowledge, tasks, agents, events, notes, images] = await Promise.all([
@@ -133,7 +133,7 @@ export const dashboard = query({
       projectLinks: projectLinks.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
       knowledge: knowledge.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
       tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
-      agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, clientType: a.clientType, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
+      agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
       events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
       notes: notes.map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
       images: await Promise.all(images.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
@@ -187,6 +187,45 @@ export const borrarRelacionProyecto = mutation({
     const link = await ctx.db.get(linkId);
     if (!link || link.workspaceId !== workspace._id) return false;
     await ctx.db.delete(linkId);
+    return true;
+  },
+});
+
+// Agents authenticate to the remote REST/MCP API with this per-agent key.
+// Only its SHA-256 hash is persisted; the raw credential is returned once.
+export const crearCredencialAgente = mutation({
+  args: { name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string() },
+  returns: v.object({ id: v.id("agents"), name: v.string(), apiKey: v.string() }),
+  handler: async (ctx, args) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    for (const [field, value, max] of [["name", args.name, 100], ["model", args.model, 120], ["modelProvider", args.modelProvider, 80], ["clientType", args.clientType, 80]] as const) {
+      if (!value.trim() || value.length > max) throw new ConvexError(`${field} es obligatorio y debe tener máximo ${max} caracteres.`);
+    }
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const apiKey = `pha_${Array.from(bytes, byte => byte.toString(16).padStart(2, "0")).join("")}`;
+    const apiKeyHash = await hashAgentApiKey(apiKey);
+    const now = Date.now();
+    const id = await ctx.db.insert("agents", {
+      workspaceId: workspace._id, name: args.name.trim(), model: args.model.trim(), modelProvider: args.modelProvider.trim(),
+      clientType: args.clientType.trim(), pilot: identity.email ?? "workspace owner", apiKeyHash, credentialMode: "mcp", active: true, createdAt: now,
+    });
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "agent_registered", entityType: "agent", entityId: id, summary: `Registró el agente remoto ${args.name.trim()}`, createdAt: now });
+    return { id, name: args.name.trim(), apiKey };
+  },
+});
+
+export const revocarCredencialAgente = mutation({
+  args: { agentId: v.id("agents") },
+  returns: v.boolean(),
+  handler: async (ctx, { agentId }) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const agent = await ctx.db.get(agentId);
+    if (!agent || agent.workspaceId !== workspace._id) return false;
+    if (agent.credentialMode !== "mcp") return false;
+    if (!agent.active) return true;
+    await ctx.db.patch(agentId, { active: false });
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "agent_revoked", entityType: "agent", entityId: agentId, summary: `Revocó la clave de ${agent.name}`, createdAt: Date.now() });
     return true;
   },
 });
