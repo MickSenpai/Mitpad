@@ -69,7 +69,8 @@ export default defineSchema({
   })
     .index("by_workspaceId_and_clientId", ["workspaceId", "clientId"])
     .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
-    .index("by_sourceProjectId_and_targetProjectId", ["sourceProjectId", "targetProjectId"]),
+    .index("by_sourceProjectId_and_targetProjectId", ["sourceProjectId", "targetProjectId"])
+    .index("by_targetProjectId", ["targetProjectId"]),
 
   // Technical summaries derived from source structure and project docs.
   // Runtime/user records and personal information are deliberately excluded.
@@ -142,9 +143,9 @@ export default defineSchema({
     actorType: v.union(v.literal("human"), v.literal("agent")),
     actorId: v.string(),
     eventType: v.union(
-      v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"),
+      v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("project_deleted"),
       v.literal("task_created"), v.literal("task_updated"),
-      v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted"),
+      v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_updated"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted"),
     ),
     entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
     entityId: v.string(),
@@ -193,7 +194,8 @@ export default defineSchema({
   })
     .index("by_uuid", ["uuid"])
     .index("by_userId_and_updatedAt", ["userId", "updatedAt"])
-    .index("by_workspaceId_and_updatedAt", ["workspaceId", "updatedAt"]),
+    .index("by_workspaceId_and_updatedAt", ["workspaceId", "updatedAt"])
+    .index("by_projectId", ["projectId"]),
 
   noteImages: defineTable({
     workspaceId: v.id("workspaces"),

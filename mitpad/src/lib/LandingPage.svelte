@@ -1,62 +1,668 @@
 <script lang="ts">
-    import { onMount } from 'svelte';
-    let copied = false;
-    const endpoint = 'https://mitpad.onrender.com/mcp';
-    const agentPrompt = `Conecta este agente con Mitpad, mi workspace para coordinar proyectos y memoria compartida.
+	import { onMount } from 'svelte';
+
+	const endpoint = 'https://mitpad.onrender.com/mcp';
+	const agentPrompt = `Conecta este agente con Mitpad, mi workspace para coordinar proyectos y memoria compartida.
 
 Mitpad MCP remoto: ${endpoint}
 Transporte: Streamable HTTP
 Autenticación: Bearer token individual de Mitpad. Pídeme que lo cree en la sección Agentes y guíame para guardarlo en un archivo local privado. Nunca escribas la clave en el chat, el repositorio o los logs.
 
 Configura la conexión MCP para este cliente, comprueba que el servidor responde y realiza solo una consulta de lectura para confirmar la conexión. No crees ni edites datos hasta que te lo solicite.`;
-    async function copyPrompt() {
-        try { await navigator.clipboard.writeText(agentPrompt); copied = true; setTimeout(() => copied = false, 2200); }
-        catch { copied = false; }
-    }
-    onMount(() => {
-        const elements = [...document.querySelectorAll('.reveal')];
-        const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-        if (reducedMotion || !('IntersectionObserver' in window)) {
-            elements.forEach((element) => element.classList.add('is-visible'));
-            return;
-        }
-        const observer = new IntersectionObserver((entries) => entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-                entry.target.classList.add('is-visible');
-                observer.unobserve(entry.target);
-            }
-        }), { threshold: 0.12, rootMargin: '0px 0px -36px 0px' });
-        elements.forEach((element) => observer.observe(element));
-        return () => observer.disconnect();
-    });
+
+	let copied = false;
+	let canvas: HTMLCanvasElement;
+
+	async function copyPrompt() {
+		try {
+			await navigator.clipboard.writeText(agentPrompt);
+			copied = true;
+			setTimeout(() => (copied = false), 2200);
+		} catch {
+			copied = false;
+		}
+	}
+
+	/* ------------------------------------------------------------------
+	   Grafo de la "M": coordenadas tomadas del logo (1165 × 870 unidades).
+	   kind: 'g' = nodo con brillo, 'v' = nodo violeta de esquina.
+	------------------------------------------------------------------ */
+	type Point = [x: number, y: number, kind?: 'g' | 'v', label?: string];
+
+	const POINTS: Point[] = [
+		[380, 528, , 'Notas'], [690, 528], [1232, 528], [1545, 528, 'v'],
+		[540, 795, 'g', 'Decisiones'], [700, 755], [965, 805, , 'Proyecto'], [1230, 745],
+		[1384, 780, 'g', 'Memoria'], [380, 938], [685, 987], [967, 1020],
+		[1249, 987, 'g', 'Agentes'], [1543, 938], [478, 1088], [551, 1207, 'g'],
+		[965, 1257, 'g', 'Tareas'], [1428, 1125], [380, 1398, 'v'], [685, 1398],
+		[1250, 1398], [1545, 1398, , 'Archivos']
+	];
+
+	const EDGES: [number, number][] = [
+		[0, 1], [0, 4], [0, 5], [0, 9], [1, 4], [1, 6], [1, 16], [2, 6], [2, 3], [2, 8], [2, 16],
+		[3, 7], [3, 8], [3, 13], [4, 5], [4, 9], [4, 10], [4, 14], [5, 6], [6, 7], [6, 10], [6, 12],
+		[7, 8], [8, 13], [8, 12], [8, 17], [9, 14], [9, 18], [10, 11], [10, 16], [10, 15], [10, 19],
+		[11, 12], [12, 16], [12, 21], [12, 20], [13, 17], [13, 21], [14, 15], [14, 18], [15, 18],
+		[15, 19], [17, 20], [17, 21], [18, 19], [20, 21]
+	];
+
+	function startGraph(cv: HTMLCanvasElement) {
+		const ctx = cv.getContext('2d')!;
+		const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+		const N = POINTS.length;
+
+		// color por nodo: azul a la izquierda, verde azulado a la derecha, violeta en las esquinas
+		const hue = POINTS.map(([x, , k]) => (k === 'v' ? 24 : 150 - 112 * ((x - 380) / 1165)));
+		const light = POINTS.map(([, , k]) => (k === 'v' ? 72 : 58));
+		const hsla = (i: number, a: number) => `hsl(${hue[i]} 78% ${light[i]}% / ${a})`;
+
+		const adj: number[][] = Array.from({ length: N }, () => []);
+		EDGES.forEach(([a, b]) => { adj[a].push(b); adj[b].push(a); });
+
+		const phase = POINTS.map((_, i) => i * 1.7);
+		const depth = POINTS.map((_, i) => 0.4 + ((i * 7) % 5) * 0.18);
+		const energy = new Float32Array(N);
+		const P = POINTS.map(() => ({ x: 0, y: 0 }));
+		const pulses: { a: number; b: number; t: number; speed: number; hops: number }[] = [];
+
+		let W = 0, H = 0, scale = 1, ox = 0, oy = 0;
+		let mouse = { x: 0, y: 0, active: false };
+		let pm = { x: 0, y: 0 };
+		let hover = -1;
+		let nextPulse = 1.2;
+		let raf = 0;
+		const t0 = performance.now();
+		let last = t0;
+
+		const clamp = (v: number) => Math.max(0, Math.min(1, v));
+		const ease = (v: number) => 1 - Math.pow(1 - v, 3);
+		const appear = (i: number, el: number) => ease(clamp((el - 200 - i * 55) / 650));
+
+		function resize() {
+			const r = cv.getBoundingClientRect();
+			const dpr = Math.min(devicePixelRatio || 1, 2);
+			W = r.width; H = r.height;
+			cv.width = W * dpr; cv.height = H * dpr;
+			ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+			const pad = Math.min(W, H) * 0.08;
+			scale = Math.min((W - pad * 2) / 1165, (H - pad * 2) / 870);
+			ox = (W - 1165 * scale) / 2 - 380 * scale;
+			oy = (H - 870 * scale) / 2 - 528 * scale;
+			if (reduce) frame(performance.now());
+		}
+
+		function spawn(a: number, from = -1, hops = 3) {
+			const options = adj[a].filter((n) => n !== from);
+			const pool = options.length ? options : adj[a];
+			const b = pool[(Math.random() * pool.length) | 0];
+			pulses.push({ a, b, t: 0, speed: 0.55 + Math.random() * 0.4, hops });
+		}
+
+		function frame(now: number) {
+			const dt = Math.min(0.05, (now - last) / 1000);
+			last = now;
+			const el = reduce ? 1e6 : now - t0;
+
+			pm.x += ((mouse.active ? mouse.x / W - 0.5 : 0) - pm.x) * Math.min(1, dt * 4);
+			pm.y += ((mouse.active ? mouse.y / H - 0.5 : 0) - pm.y) * Math.min(1, dt * 4);
+
+			POINTS.forEach(([bx, by], i) => {
+				const drift = reduce ? 0 : 1;
+				P[i].x = ox + bx * scale + pm.x * depth[i] * 26 + Math.sin(now / 1700 + phase[i]) * 2.2 * drift;
+				P[i].y = oy + by * scale + pm.y * depth[i] * 26 + Math.cos(now / 1900 + phase[i]) * 2.2 * drift;
+			});
+
+			const r0 = Math.max(5, 29 * scale);
+			const lw = Math.max(1.5, 5 * scale);
+
+			// nodo bajo el cursor
+			let h = -1;
+			if (mouse.active) {
+				let best = Math.max(16, r0 * 2.2);
+				P.forEach((p, i) => {
+					const d = Math.hypot(p.x - mouse.x, p.y - mouse.y);
+					if (d < best) { best = d; h = i; }
+				});
+			}
+			if (h !== hover) {
+				hover = h;
+				if (h >= 0 && !reduce) adj[h].forEach((n) => pulses.push({ a: h, b: n, t: 0, speed: 1.3, hops: 0 }));
+			}
+
+			if (!reduce) {
+				nextPulse -= dt;
+				if (nextPulse <= 0 && pulses.length < 9 && el > 1800) {
+					spawn((Math.random() * N) | 0);
+					nextPulse = 0.5 + Math.random() * 0.8;
+				}
+			}
+
+			ctx.clearRect(0, 0, W, H);
+			ctx.lineCap = 'round';
+
+			// aristas
+			for (const [a, b] of EDGES) {
+				const al = Math.min(appear(a, el), appear(b, el));
+				if (al <= 0) continue;
+				const A = P[a], B = P[b];
+				const lit = hover >= 0 && (a === hover || b === hover);
+				const g = ctx.createLinearGradient(A.x, A.y, B.x, B.y);
+				g.addColorStop(0, hsla(a, 1));
+				g.addColorStop(1, hsla(b, 1));
+				ctx.globalAlpha = al * (hover < 0 ? 0.6 : lit ? 1 : 0.18);
+				ctx.strokeStyle = g;
+				ctx.lineWidth = lit ? lw * 1.4 : lw;
+				ctx.beginPath();
+				ctx.moveTo(A.x, A.y);
+				ctx.lineTo(A.x + (B.x - A.x) * al, A.y + (B.y - A.y) * al);
+				ctx.stroke();
+			}
+			ctx.globalAlpha = 1;
+
+			// pulsos de señal que viajan por el grafo
+			ctx.globalCompositeOperation = 'lighter';
+			for (let k = pulses.length - 1; k >= 0; k--) {
+				const p = pulses[k];
+				p.t += dt * p.speed;
+				if (p.t >= 1) {
+					energy[p.b] = 1;
+					pulses.splice(k, 1);
+					if (p.hops > 0 && Math.random() < 0.7) spawn(p.b, p.a, p.hops - 1);
+					continue;
+				}
+				const A = P[p.a], B = P[p.b];
+				const x = A.x + (B.x - A.x) * p.t, y = A.y + (B.y - A.y) * p.t;
+				const t2 = Math.max(0, p.t - 0.16);
+				const x2 = A.x + (B.x - A.x) * t2, y2 = A.y + (B.y - A.y) * t2;
+				const tail = ctx.createLinearGradient(x2, y2, x, y);
+				tail.addColorStop(0, hsla(p.a, 0));
+				tail.addColorStop(1, hsla(p.b, 0.95));
+				ctx.strokeStyle = tail;
+				ctx.lineWidth = lw * 1.2;
+				ctx.beginPath(); ctx.moveTo(x2, y2); ctx.lineTo(x, y); ctx.stroke();
+				const halo = ctx.createRadialGradient(x, y, 0, x, y, lw * 4.5);
+				halo.addColorStop(0, hsla(p.b, 0.9));
+				halo.addColorStop(1, hsla(p.b, 0));
+				ctx.fillStyle = halo;
+				ctx.beginPath(); ctx.arc(x, y, lw * 4.5, 0, 6.2832); ctx.fill();
+			}
+			ctx.globalCompositeOperation = 'source-over';
+
+			// nodos
+			const near = hover >= 0 ? new Set([hover, ...adj[hover]]) : null;
+			for (let i = 0; i < N; i++) {
+				const ap = appear(i, el);
+				if (ap <= 0) continue;
+				energy[i] = Math.max(0, energy[i] - dt * 1.8);
+				const glow = POINTS[i][2] === 'g';
+				const r = r0 * (glow ? 1.12 : 1) * ap * (1 + energy[i] * 0.14);
+				const { x, y } = P[i];
+				ctx.globalAlpha = ap * (near && !near.has(i) ? 0.35 : 1);
+
+				const haloA = (glow ? 0.34 + 0.1 * Math.sin(now / 900 + phase[i]) : 0) + energy[i] * 0.5 + (i === hover ? 0.3 : 0);
+				if (haloA > 0.02) {
+					const rad = r * (glow ? 3.6 : 2.8);
+					const g = ctx.createRadialGradient(x, y, r * 0.5, x, y, rad);
+					g.addColorStop(0, hsla(i, haloA));
+					g.addColorStop(1, hsla(i, 0));
+					ctx.fillStyle = g;
+					ctx.beginPath(); ctx.arc(x, y, rad, 0, 6.2832); ctx.fill();
+				}
+				ctx.fillStyle = hsla(i, 1);
+				ctx.beginPath(); ctx.arc(x, y, r, 0, 6.2832); ctx.fill();
+				if (glow) {
+					ctx.fillStyle = 'rgba(255,255,255,.85)';
+					ctx.beginPath(); ctx.arc(x, y, r * 0.17, 0, 6.2832); ctx.fill();
+				}
+				if (i === hover) {
+					ctx.strokeStyle = 'rgba(255,255,255,.75)';
+					ctx.lineWidth = 1.5;
+					ctx.beginPath(); ctx.arc(x, y, r + 5, 0, 6.2832); ctx.stroke();
+				}
+			}
+			ctx.globalAlpha = 1;
+
+			// etiqueta del nodo
+			const label = hover >= 0 ? POINTS[hover][3] : undefined;
+			if (label) {
+				ctx.font = '600 13px "Instrument Sans", system-ui, sans-serif';
+				const w = ctx.measureText(label).width + 22, hh = 28;
+				const lx = Math.min(Math.max(8, P[hover].x + r0 * 1.7), W - w - 8);
+				const ly = Math.max(8, P[hover].y - r0 * 1.7 - hh);
+				ctx.fillStyle = 'rgba(22,26,37,.94)';
+				ctx.strokeStyle = hsla(hover, 0.9);
+				ctx.lineWidth = 1;
+				ctx.beginPath();
+				if (ctx.roundRect) ctx.roundRect(lx, ly, w, hh, 7); else ctx.rect(lx, ly, w, hh);
+				ctx.fill(); ctx.stroke();
+				ctx.fillStyle = '#e8ecf5';
+				ctx.textBaseline = 'middle';
+				ctx.fillText(label, lx + 11, ly + hh / 2 + 0.5);
+			}
+		}
+
+		const loop = (t: number) => { frame(t); raf = requestAnimationFrame(loop); };
+		const play = () => { if (!raf && !reduce) { last = performance.now(); raf = requestAnimationFrame(loop); } };
+		const pause = () => { cancelAnimationFrame(raf); raf = 0; };
+
+		const onMove = (e: PointerEvent) => {
+			const r = cv.getBoundingClientRect();
+			mouse = { x: e.clientX - r.left, y: e.clientY - r.top, active: true };
+		};
+		const onLeave = () => { mouse.active = false; };
+
+		cv.addEventListener('pointermove', onMove);
+		cv.addEventListener('pointerleave', onLeave);
+		const ro = new ResizeObserver(resize);
+		ro.observe(cv);
+		const io = new IntersectionObserver(([entry]) => (entry.isIntersecting ? play() : pause()));
+		io.observe(cv);
+		resize();
+
+		return () => {
+			pause(); ro.disconnect(); io.disconnect();
+			cv.removeEventListener('pointermove', onMove);
+			cv.removeEventListener('pointerleave', onLeave);
+		};
+	}
+
+	onMount(() => startGraph(canvas));
 </script>
 
 <svelte:head>
-    <title>Mitpad — El workspace que tus agentes pueden recordar</title>
-    <meta name="description" content="Coordina proyectos, memoria y agentes de IA en un workspace compartido. Conecta clientes MCP con una clave individual y conserva el control." />
-    <meta name="theme-color" content="#0b1113" />
+	<title>Mitpad — El workspace que tus agentes pueden recordar</title>
+	<meta name="description" content="Coordina proyectos, memoria y agentes de IA en un workspace compartido. Conecta clientes MCP con una clave individual y conserva el control." />
+	<meta name="theme-color" content="#1c202b" />
+	<link rel="preconnect" href="https://fonts.googleapis.com" />
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="anonymous" />
+	<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,600&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet" />
 </svelte:head>
 
 <main class="landing">
-    <nav class="topbar"><a class="wordmark" href="/" aria-label="Mitpad, inicio"><img src="/mitpad-mark-web.webp" alt="" /><span>mitpad<small>AGENT WORKBENCH</small></span></a><div class="nav-links"><a href="#como-funciona">Cómo funciona</a><a href="#agentes">Agentes</a><a href="#tecnologia">Tecnología</a></div><a class="nav-cta" href="/app">Abrir workspace <span>↗</span></a></nav>
-    <section class="hero">
-        <div class="hero-copy"><div class="eyebrow"><span></span> UN ESPACIO COMPARTIDO PARA PERSONAS Y AGENTES</div><h1>El contexto de tu proyecto, <em>por fin conectado.</em></h1><p class="hero-lede">Mitpad reúne proyectos, tareas, notas y conocimiento en un workspace que tus agentes pueden consultar con MCP. Tú decides qué hacen y puedes seguir cada movimiento.</p><div class="hero-actions"><a class="button-primary" href="/app">Entrar a Mitpad <span>→</span></a><a class="button-quiet" href="#conectar">Conectar un agente <span>↓</span></a></div><div class="hero-proof"><span class="proof-avatars"><i>M</i><i>AI</i><i>↗</i></span><span>Una memoria compartida.<br /><strong>Más continuidad en cada sesión.</strong></span></div></div>
-        <div class="hero-visual" aria-label="Visualización de proyectos conectados"><div class="visual-glow"></div><div class="orbit orbit-one"></div><div class="orbit orbit-two"></div><div class="orbit orbit-three"></div><div class="graph-edge edge-a"></div><div class="graph-edge edge-b"></div><div class="graph-edge edge-c"></div><div class="graph-edge edge-d"></div><div class="graph-node node-core"><img src="/mitpad-mark-web.webp" alt="" /><span>MITPAD<small>WORKSPACE</small></span></div><div class="graph-node node-project"><i>◈</i><span>Proyecto<small>Objetivos y estado</small></span></div><div class="graph-node node-memory"><i>▤</i><span>Memoria<small>Notas y decisiones</small></span></div><div class="graph-node node-agent"><i>✳</i><span>Agentes<small>Acciones trazables</small></span></div><div class="graph-node node-task"><i>✓</i><span>Tareas<small>Seguimiento vivo</small></span></div><div class="visual-caption"><span class="live-dot"></span> CONTEXTO CONECTADO <span>·</span> MCP</div></div>
-        <div class="hero-bottom"><span>DISEÑADO PARA TRABAJAR CON IA</span><div><span>MEMORIA</span><b>·</b><span>PROYECTOS</span><b>·</b><span>CONTROL</span><b>·</b><span>MCP</span></div></div>
-    </section>
-    <section class="intro-section reveal"><div class="section-kicker">01 / QUÉ ES MITPAD</div><div class="intro-text"><h2>Tus agentes trabajan.<br /><em>Tú mantienes el mapa.</em></h2><p>Mitpad es un centro de trabajo para coordinar personas y agentes de IA. Guarda el contexto útil del proyecto —qué se decidió, qué falta y qué cambió— para que el equipo pueda continuar sin reconstruirlo desde cero en cada conversación.</p><a class="text-link" href="/app">Explora tu workspace <span>↗</span></a></div><div class="intro-stats"><article><strong>01</strong><span>Workspace por cuenta</span></article><article><strong>∞</strong><span>Contexto que se acumula</span></article><article><strong>5 min</strong><span>Actualización web periódica</span></article></div></section>
-    <section class="features-section" id="como-funciona"><div class="section-heading reveal"><div><div class="section-kicker">02 / CÓMO FUNCIONA</div><h2>Todo el trabajo,<br /><em>en un mismo hilo.</em></h2></div><p>Mitpad conecta el contexto y las acciones para que puedas supervisar el avance sin perder de vista quién hizo qué.</p></div><div class="feature-grid"><article class="feature-card feature-wide reveal"><div class="feature-number">01 — CONTEXTO</div><div class="feature-art memory-art"><span class="memory-chip chip-one">Decisión de arquitectura</span><span class="memory-chip chip-two">Nota de seguimiento</span><span class="memory-chip chip-three">Meido · conocimiento</span><div class="memory-lines"></div><div class="memory-center">M</div></div><h3>Una memoria que sirve al equipo</h3><p>Guarda notas atendidas o pendientes, conocimiento de proyectos y relaciones entre iniciativas. La información sigue disponible para ti y para tus agentes autorizados.</p></article><article class="feature-card reveal"><div class="feature-number">02 — EJECUCIÓN</div><div class="feature-art task-art"><div class="task-line"><i>✓</i><span>Preparar el contexto</span><b>Hecho</b></div><div class="task-line selected"><i></i><span>Implementar el cambio</span><b>En curso</b></div><div class="task-line"><i></i><span>Revisar con el equipo</span><b>Pendiente</b></div><div class="task-agent">✳ <span>Meido trabaja en esta tarea</span></div></div><h3>Progreso que puedes seguir</h3><p>Proyectos, tareas, responsables y actividad reciente a la vista. El tablero te deja revisar el trabajo de los agentes y continuar donde quedó.</p></article><article class="feature-card reveal"><div class="feature-number">03 — RELACIONES</div><div class="feature-art relation-art"><div class="relation-circle circle-a">Mitpad</div><div class="relation-circle circle-b">Meido</div><div class="relation-circle circle-c">CosechIA</div><div class="relation-line relation-ab"></div><div class="relation-line relation-ac"></div><span class="relation-tag">comparte conocimiento</span></div><h3>Un mapa entre proyectos</h3><p>El grafo visual conecta proyectos, tareas y conocimiento. Filtra por proyecto y explora cómo se relacionan las piezas del trabajo.</p></article></div></section>
-    <section class="connection-section" id="conectar"><div class="connection-copy reveal"><div class="section-kicker">03 / CONECTA TU AGENTE</div><h2>Una instrucción.<br /><em>Un workspace con contexto.</em></h2><p>Copia este prompt y pégalo en tu agente. Te guiará para configurar una conexión MCP segura y comprobarla con una lectura.</p><div class="connection-meta"><span><i></i> MCP remoto</span><span>Streamable HTTP</span><span>Acceso individual</span></div></div><div class="prompt-card reveal"><div class="prompt-head"><div><span class="terminal-dot"></span><strong>Prompt de conexión</strong></div><span class="prompt-language">PARA TU AGENTE</span></div><pre>{agentPrompt}</pre><button class="copy-button" on:click={copyPrompt}>{copied ? 'Copiado ✓' : 'Copiar prompt'} <span>{copied ? '' : '▣'}</span></button><div class="prompt-foot"><span>MITPAD MCP</span><code>{endpoint}</code></div></div><div class="connection-note"><span>01</span><p>Inicia sesión en Mitpad y crea una credencial para cada agente desde <a href="/app">Workspace → Agentes</a>.</p><span>02</span><p>Tu clave se muestra una vez. Guárdala en tu equipo y limita el acceso al usuario que ejecuta el agente.</p><span>03</span><p>Comprueba la conexión con una operación de lectura. Mantén el control de las acciones y revoca accesos que ya no utilices.</p></div></section>
-    <section class="agents-section" id="agentes"><div class="section-heading reveal"><div><div class="section-kicker">04 / COMPATIBILIDAD</div><h2>Elige tu agente.<br /><em>Mitpad conserva el contexto.</em></h2></div><p>Conecta cualquier cliente que implemente MCP remoto por Streamable HTTP y admita cabeceras de autorización.</p></div><div class="agent-client-grid reveal"><article><span class="client-mark opencode">⌘</span><strong>OpenCode</strong><small>Cliente MCP remoto</small></article><article><span class="client-mark codex">◉</span><strong>Codex</strong><small>Según configuración MCP del cliente</small></article><article><span class="client-mark claude">✳</span><strong>Claude Code</strong><small>Con servidor HTTP compatible</small></article><article><span class="client-mark cursor">↗</span><strong>Cursor</strong><small>Con soporte de servidor MCP remoto</small></article><article><span class="client-mark other">＋</span><strong>Otros clientes</strong><small>Compatible con MCP Streamable HTTP</small></article></div><p class="compatibility-note">La forma de registrar un servidor y suministrar el token cambia según el cliente. El prompt de conexión adapta la guía; nunca incluyas la clave en el texto del prompt.</p></section>
-    <section class="technology-section" id="tecnologia"><div class="tech-copy reveal"><div class="section-kicker">05 / HECHO PARA CONTINUAR</div><h2>Una base pequeña.<br /><em>Un flujo conectado.</em></h2><p>La web y el cliente de escritorio comparten el workspace y los datos, con experiencias adecuadas a cada plataforma. La web consulta Convex; los agentes acceden mediante el servidor MCP autenticado.</p><a href="/app" class="text-link">Abre tu workspace <span>↗</span></a></div><div class="tech-stack reveal"><article><span>01</span><div><strong>SvelteKit</strong><small>Interfaz web rápida y adaptable</small></div><b>WEB</b></article><article><span>02</span><div><strong>Convex</strong><small>Datos reactivos, autenticación y archivos</small></div><b>BACKEND</b></article><article><span>03</span><div><strong>MCP</strong><small>Protocolo abierto para conectar agentes</small></div><b>AGENTES</b></article><article><span>04</span><div><strong>Tauri + SQLite</strong><small>Aplicación de escritorio con datos locales</small></div><b>DESKTOP</b></article></div></section>
-    <footer class="footer"><a class="wordmark" href="/"><img src="/mitpad-mark-web.webp" alt="" /><span>mitpad<small>AGENT WORKBENCH</small></span></a><span>El contexto de tu proyecto, conectado.</span><div><a href="/app">Iniciar sesión</a><a href="#conectar">Conectar agente</a></div></footer>
+	<header class="topbar wrap">
+		<a class="brand" href="/" aria-label="Mitpad, inicio">
+			<img src="/mitpad-mark-web.webp" alt="" width="32" height="32" />
+			<span>mitpad</span>
+		</a>
+		<nav aria-label="Principal">
+			<a href="#como-funciona">Cómo funciona</a>
+			<a href="#conectar">Conectar</a>
+			<a href="#agentes">Agentes</a>
+			<a href="#tecnologia">Tecnología</a>
+		</nav>
+		<a class="btn btn-outline" href="/app">Abrir workspace</a>
+	</header>
+
+	<section class="hero wrap">
+		<div class="hero-copy">
+			<h1>El contexto de tu proyecto, por fin conectado.</h1>
+			<p class="lede">
+				Mitpad reúne proyectos, tareas, notas y conocimiento en un workspace que tus agentes
+				consultan con MCP. Tú decides qué hacen y ves cada movimiento.
+			</p>
+			<div class="actions">
+				<a class="btn btn-primary" href="/app">Entrar a Mitpad</a>
+				<a class="link" href="#conectar">Conectar un agente ↓</a>
+			</div>
+			<p class="fine">Cada agente tiene su propia clave y puedes revocarla cuando quieras.</p>
+		</div>
+
+		<div class="hero-graph">
+			<canvas bind:this={canvas} aria-label="Grafo de nodos conectados con forma de la letra M, por donde viajan señales entre proyectos, memoria, tareas y agentes"></canvas>
+			<p class="hint">Pasa el cursor por los nodos</p>
+		</div>
+	</section>
+
+	<section class="statement block wrap">
+		<h2>Tus agentes trabajan. Tú mantienes el mapa.</h2>
+		<div>
+			<p>
+				Mitpad es un centro de trabajo para coordinar personas y agentes de IA. Guarda el contexto
+				útil del proyecto (qué se decidió, qué falta y qué cambió) para que el equipo continúe sin
+				reconstruirlo desde cero en cada conversación.
+			</p>
+			<a class="link" href="/app">Explora tu workspace ↗</a>
+		</div>
+	</section>
+
+	<section class="features block wrap" id="como-funciona">
+		<h2 class="section-title">Todo el trabajo, en un mismo hilo</h2>
+
+		<article class="feature">
+			<div class="feature-text">
+				<h3>Una memoria que sirve al equipo</h3>
+				<p>Notas, decisiones y conocimiento de cada proyecto quedan guardados y disponibles para ti y para los agentes que autorices.</p>
+			</div>
+			<ul class="panel log" aria-label="Ejemplo de memoria del proyecto">
+				<li><span class="tag tag-decision">Decisión</span><p>Migrar la autenticación a Convex</p><time>hoy, 10:42</time></li>
+				<li><span class="tag tag-note">Nota</span><p>El cliente prefiere revisar los cambios por la tarde</p><time>ayer</time></li>
+				<li><span class="tag tag-todo">Pendiente</span><p>Documentar el flujo de importación de archivos</p><time>hace 3 días</time></li>
+			</ul>
+		</article>
+
+		<article class="feature flip">
+			<div class="feature-text">
+				<h3>Progreso que puedes seguir</h3>
+				<p>Proyectos, tareas, responsables y actividad reciente en un tablero. Revisa lo que hicieron los agentes y retoma donde quedó.</p>
+			</div>
+			<ul class="panel tasks" aria-label="Ejemplo de tareas">
+				<li class="done"><i></i><span>Preparar el contexto</span><b>Hecha</b></li>
+				<li class="active"><i></i><span>Implementar el cambio</span><b class="by">Meido está en ello</b></li>
+				<li><i></i><span>Revisar con el equipo</span><b>Pendiente</b></li>
+			</ul>
+		</article>
+
+		<article class="feature">
+			<div class="feature-text">
+				<h3>Un mapa entre proyectos</h3>
+				<p>El grafo conecta proyectos, tareas y conocimiento. Filtra por proyecto y explora cómo se relacionan las piezas del trabajo.</p>
+			</div>
+			<div class="panel relations">
+				<svg viewBox="0 0 360 210" role="img" aria-label="Mitpad, Meido y CosechIA conectados entre sí">
+					<line class="flow" x1="180" y1="58" x2="78" y2="150" />
+					<line class="flow slow" x1="180" y1="58" x2="284" y2="150" />
+					<line x1="78" y1="150" x2="284" y2="150" class="faint" />
+					<text x="96" y="96" class="edge-label">comparte conocimiento</text>
+					<circle cx="180" cy="58" r="13" fill="#2cc3ee" /><circle cx="180" cy="58" r="22" fill="#2cc3ee" opacity=".14" />
+					<circle cx="78" cy="150" r="13" fill="#3f9be6" /><circle cx="284" cy="150" r="13" fill="#48dcb9" />
+					<text x="180" y="28" text-anchor="middle">Mitpad</text>
+					<text x="78" y="187" text-anchor="middle">Meido</text>
+					<text x="284" y="187" text-anchor="middle">CosechIA</text>
+				</svg>
+			</div>
+		</article>
+	</section>
+
+	<section class="connect block wrap" id="conectar">
+		<div class="connect-copy">
+			<h2>Una instrucción y tu agente ya tiene contexto</h2>
+			<p>Copia este prompt y pégalo en tu agente. Te guiará para configurar una conexión MCP segura y comprobarla con una lectura.</p>
+			<ol class="steps">
+				<li>Inicia sesión en Mitpad y crea una credencial para cada agente en <a href="/app">Workspace → Agentes</a>.</li>
+				<li>La clave se muestra una sola vez. Guárdala en tu equipo y limita el acceso al usuario que ejecuta el agente.</li>
+				<li>Comprueba la conexión con una lectura. Mantén el control de las acciones y revoca los accesos que ya no uses.</li>
+			</ol>
+		</div>
+
+		<div class="prompt">
+			<div class="prompt-head">
+				<strong>Prompt de conexión</strong>
+				<span>MCP remoto · Streamable HTTP</span>
+			</div>
+			<pre>{agentPrompt}</pre>
+			<div class="prompt-foot">
+				<code>{endpoint}</code>
+				<button class="btn btn-primary" class:ok={copied} on:click={copyPrompt} aria-live="polite">
+					{copied ? 'Copiado' : 'Copiar prompt'}
+				</button>
+			</div>
+		</div>
+	</section>
+
+	<section class="clients block wrap" id="agentes">
+		<div class="clients-intro">
+			<h2>Elige tu agente. Mitpad conserva el contexto.</h2>
+			<p>Funciona con cualquier cliente que implemente MCP remoto por Streamable HTTP y admita cabeceras de autorización.</p>
+		</div>
+		<div>
+			<ul class="client-list">
+				<li><strong>OpenCode</strong><span>Cliente MCP remoto</span></li>
+				<li><strong>Codex</strong><span>Según la configuración MCP del cliente</span></li>
+				<li><strong>Claude Code</strong><span>Con servidor HTTP compatible</span></li>
+				<li><strong>Cursor</strong><span>Con soporte de servidor MCP remoto</span></li>
+				<li><strong>Otros clientes</strong><span>Cualquiera compatible con Streamable HTTP</span></li>
+			</ul>
+			<p class="note">Registrar el servidor y pasar el token cambia según el cliente; el prompt de conexión adapta la guía. Nunca incluyas la clave en el texto del prompt.</p>
+		</div>
+	</section>
+
+	<section class="tech block wrap" id="tecnologia">
+		<div class="tech-copy">
+			<h2>Una base pequeña, un flujo conectado</h2>
+			<p>Proyectos, memoria y agentes comparten un mismo espacio privado. Convex mantiene los datos sincronizados y el servidor MCP conecta los clientes que tú autorizas.</p>
+			<a class="link" href="/app">Abre tu workspace ↗</a>
+		</div>
+		<dl class="stack">
+			<div><dt>SvelteKit</dt><dd>Interfaz web rápida y adaptable</dd><span>Web</span></div>
+			<div><dt>Convex</dt><dd>Datos reactivos, autenticación y archivos</dd><span>Backend</span></div>
+			<div><dt>MCP</dt><dd>Protocolo abierto para conectar agentes</dd><span>Agentes</span></div>
+			<div><dt>Clerk</dt><dd>Acceso seguro con cuenta personal</dd><span>Identidad</span></div>
+		</dl>
+	</section>
+
+	<footer class="footer wrap">
+		<a class="brand" href="/"><img src="/mitpad-mark-web.webp" alt="" width="28" height="28" /><span>mitpad</span></a>
+		<p>El contexto de tu proyecto, conectado.</p>
+		<nav aria-label="Pie"><a href="/app">Iniciar sesión</a><a href="#conectar">Conectar agente</a></nav>
+	</footer>
 </main>
 
 <style>
-    :global(*){box-sizing:border-box}:global(html){scroll-behavior:smooth}:global(body){margin:0;background:#0b1113;color:#e7eeeb;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}:global(body)::selection{background:#8fe0c8;color:#07110f}.landing{--mint:#9ce8d1;--muted:#a3b2af;--line:#233032;--panel:#111a1c;overflow:hidden;background:radial-gradient(ellipse 65% 45% at 86% 5%,#17332d55,transparent 80%),#0b1113}.topbar{height:78px;max-width:1380px;margin:auto;padding:0 5.5%;display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid #20302e77}.wordmark{display:flex;align-items:center;gap:10px;color:#eef6f1;text-decoration:none;font-size:17px;font-weight:800;letter-spacing:-.5px}.wordmark img{width:37px;height:37px;object-fit:cover;border-radius:11px;border:1px solid #354440}.wordmark small{display:block;margin-top:3px;color:#82928d;font-size:8px;letter-spacing:1.6px}.nav-links{display:flex;gap:34px}.nav-links a,.footer a{color:#9caaa6;text-decoration:none;font-size:11px;transition:color .2s}.nav-links a:hover,.footer a:hover{color:var(--mint)}.nav-cta{padding:11px 15px;border:1px solid #38534b;border-radius:7px;color:#c9e7dc;text-decoration:none;font-size:11px}.nav-cta span{margin-left:13px;color:var(--mint)}.hero{position:relative;max-width:1380px;min-height:660px;margin:auto;padding:95px 5.5% 0;display:grid;grid-template-columns:1fr 1fr;align-items:center}.hero-copy{position:relative;z-index:2;max-width:590px;padding-bottom:50px}.eyebrow,.section-kicker{color:#9eb1ab;font-size:9px;font-weight:750;letter-spacing:1.7px}.hero .eyebrow{display:flex;align-items:center;gap:9px}.hero .eyebrow span,.live-dot,.connection-meta i{width:7px;height:7px;border-radius:50%;background:#8ce3c6;box-shadow:0 0 14px #79e4bf88}.hero h1,.section-heading h2,.intro-text h2,.connection-copy h2,.tech-copy h2{margin:25px 0 17px;font-size:clamp(43px,5.5vw,72px);line-height:1.01;letter-spacing:-4px;font-weight:560}.hero h1 em,.section-heading h2 em,.intro-text h2 em,.connection-copy h2 em,.tech-copy h2 em{color:var(--mint);font-style:normal}.hero-lede{max-width:490px;color:#a9b8b2;font-size:14px;line-height:1.85}.hero-actions{display:flex;align-items:center;gap:22px;margin-top:29px}.button-primary{padding:14px 17px;border-radius:7px;background:var(--mint);color:#0c1613;text-decoration:none;font-size:11px;font-weight:800;box-shadow:0 7px 25px #73c9ac22}.button-primary span{margin-left:17px}.button-quiet{color:#bdcbc6;text-decoration:none;font-size:11px}.button-quiet span{margin-left:9px;color:var(--mint)}.hero-proof{display:flex;align-items:center;gap:13px;margin-top:42px;color:#8a9b95;font-size:9px;line-height:1.7}.hero-proof strong{color:#dce7e2;font-weight:600}.proof-avatars{display:flex}.proof-avatars i{display:grid;width:28px;height:28px;margin-right:-7px;place-items:center;border:2px solid #0b1113;border-radius:50%;background:#29453d;color:#adf1d9;font-size:8px;font-style:normal}.proof-avatars i:nth-child(2){background:#303b43;color:#d5caeb}.proof-avatars i:nth-child(3){background:#493c2d;color:#f0d8a7}.hero-visual{position:relative;height:500px;margin:0 -6% 30px -3%;perspective:850px}.visual-glow{position:absolute;inset:12% 9%;border-radius:50%;background:#52b99b16;filter:blur(48px)}.orbit{position:absolute;top:50%;left:50%;border:1px solid #52857530;border-radius:50%;transform:translate(-50%,-50%) rotateX(68deg) rotateZ(-22deg)}.orbit-one{width:390px;height:390px}.orbit-two{width:300px;height:300px;transform:translate(-50%,-50%) rotateX(68deg) rotateZ(28deg)}.orbit-three{width:480px;height:480px;transform:translate(-50%,-50%) rotateX(68deg) rotateZ(59deg)}.graph-edge{position:absolute;top:50%;left:50%;height:1px;transform-origin:left;background:linear-gradient(90deg,#85dbc288,#85dbc200)}.edge-a{width:180px;transform:rotate(-27deg)}.edge-b{width:174px;transform:rotate(142deg)}.edge-c{width:173px;transform:rotate(35deg)}.edge-d{width:184px;transform:rotate(215deg)}.graph-node{position:absolute;display:flex;align-items:center;gap:10px;padding:11px 13px;border:1px solid #3b5c51;border-radius:9px;background:linear-gradient(140deg,#182623ee,#111819f2);box-shadow:0 14px 40px #0006;backdrop-filter:blur(10px);color:#e5f0eb;font-size:10px}.graph-node>i{display:grid;width:27px;height:27px;place-items:center;border:1px solid #3b665a;border-radius:7px;color:var(--mint);font-size:13px;font-style:normal}.graph-node span{display:grid;gap:4px}.graph-node small{color:#879c94;font-size:8px}.node-core{top:40%;left:37%;padding:14px 17px;border-color:#6ba993;background:linear-gradient(140deg,#1d3730,#14211f);box-shadow:0 0 42px #77d6b025,0 16px 50px #0008}.node-core img{width:33px;height:33px;object-fit:cover;border:1px solid #4c7969;border-radius:8px}.node-core span{font-weight:800;letter-spacing:1px}.node-core small{font-size:7px;font-weight:500;letter-spacing:1.3px}.node-project{top:15%;left:48%}.node-memory{top:42%;right:3%}.node-agent{bottom:18%;left:44%}.node-task{top:62%;left:1%}.visual-caption{position:absolute;right:12%;bottom:5%;display:flex;align-items:center;gap:9px;color:#a3b5ae;font-size:8px;letter-spacing:1.2px}.visual-caption>span:last-child{color:#638d7c}.hero-bottom{position:absolute;right:5.5%;bottom:27px;left:5.5%;display:flex;justify-content:space-between;padding-top:18px;border-top:1px solid #24312e;color:#687972;font-size:8px;letter-spacing:1.4px}.hero-bottom>div{display:flex;gap:12px;color:#a6b5af}.hero-bottom b{color:#5d8b7b}.intro-section,.features-section,.connection-section,.agents-section,.technology-section{max-width:1240px;margin:auto;padding:120px 5.5%}.intro-section{display:grid;grid-template-columns:.7fr 1.2fr .7fr;gap:40px;border-top:1px solid #1e2a28}.section-kicker{color:#83bda9}.intro-text h2,.section-heading h2,.connection-copy h2,.tech-copy h2{margin:0 0 19px;font-size:clamp(34px,4vw,51px);line-height:1.08;letter-spacing:-2.2px}.intro-text p,.section-heading>p,.feature-card p,.connection-copy>p,.tech-copy>p{color:#9caeaa;font-size:12px;line-height:1.9}.intro-text p{max-width:490px}.text-link{display:inline-block;margin-top:14px;color:#c2e8dc;text-decoration:none;font-size:11px}.text-link span{margin-left:10px;color:var(--mint)}.intro-stats{align-self:center;border-top:1px solid #2a3935}.intro-stats article{display:flex;align-items:center;gap:18px;padding:15px 3px;border-bottom:1px solid #2a3935}.intro-stats strong{width:48px;color:var(--mint);font-size:19px;font-weight:500}.intro-stats span{color:#9eada8;font-size:10px}.features-section{padding-top:65px}.section-heading{display:flex;justify-content:space-between;align-items:end;gap:30px;margin-bottom:35px}.section-heading>p{max-width:340px;margin-bottom:5px}.feature-grid{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:14px}.feature-card{min-height:390px;padding:21px;border:1px solid #263431;border-radius:12px;background:linear-gradient(145deg,#121b1c,#0e1516)}.feature-number{color:#7e9b91;font-size:8px;letter-spacing:1.4px}.feature-card h3{margin:20px 0 9px;font-size:16px;font-weight:600;letter-spacing:-.4px}.feature-card p{margin:0;font-size:10px}.feature-art{position:relative;height:184px;margin:16px 0 14px;overflow:hidden;border:1px solid #263a35;border-radius:8px;background:radial-gradient(ellipse at 50% 50%,#18352b,#101818 73%)}.memory-chip{position:absolute;z-index:1;padding:8px 10px;border:1px solid #405d51;border-radius:6px;background:#172522;color:#c5dcd2;font-size:8px}.chip-one{top:23px;left:15px}.chip-two{top:77px;right:14px}.chip-three{bottom:17px;left:28px}.memory-lines{position:absolute;inset:25% 22%;background:repeating-linear-gradient(0deg,transparent 0 17px,#64857822 18px 19px);transform:rotate(-15deg)}.memory-center{position:absolute;top:50%;left:51%;display:grid;width:39px;height:39px;place-items:center;transform:translate(-50%,-50%);border:1px solid #70b198;border-radius:12px;background:#214338;color:#b3f1dc;font-weight:800;box-shadow:0 0 30px #8ce0c644}.task-art{display:grid;align-content:center;padding:14px 11px;gap:8px}.task-line{display:flex;align-items:center;gap:7px;padding:8px;border-radius:5px;color:#aab8b2;font-size:8px}.task-line>i{width:11px;height:11px;border:1px solid #62746e;border-radius:50%}.task-line:first-child>i{border-color:#74d6ae;background:#74d6ae}.task-line:first-child>i:after{content:'✓';display:block;margin:-1px 0 0 1px;color:#13221c;font-size:8px}.task-line span{flex:1}.task-line b{color:#82938c;font-size:7px;font-weight:500}.task-line.selected{background:#1a2c27;color:#dcece5}.task-line.selected>i{border-color:#8ee4c6;box-shadow:0 0 9px #79dcb477}.task-agent{margin:2px 5px;color:#a7eed5;font-size:9px}.task-agent span{margin-left:5px;color:#9aaba5}.relation-circle{position:absolute;z-index:1;display:grid;width:66px;height:66px;place-items:center;border:1px solid #679987;border-radius:50%;background:#19322a;color:#d8eee5;font-size:8px;box-shadow:0 0 22px #6ab49420}.circle-a{top:22px;left:39%}.circle-b{bottom:19px;left:15%}.circle-c{right:14%;bottom:20px}.relation-line{position:absolute;top:55%;left:32%;width:100px;height:1px;background:#79c8ad77;transform:rotate(32deg)}.relation-ac{top:54%;left:50%;transform:rotate(-35deg)}.relation-tag{position:absolute;right:4px;top:10px;color:#8fa99e;font-size:7px}.connection-section{display:grid;grid-template-columns:.85fr 1.15fr;gap:28px 65px;padding-top:98px;padding-bottom:100px;border-top:1px solid #1e2a28}.connection-copy h2{margin-top:19px}.connection-copy>p{max-width:400px}.connection-meta{display:flex;flex-wrap:wrap;gap:14px;margin-top:23px}.connection-meta span{display:flex;align-items:center;gap:7px;color:#abc0b7;font-size:9px}.connection-meta i{width:6px;height:6px}.connection-meta span+span:before{content:'·';margin-right:6px;color:#527265}.prompt-card{overflow:hidden;border:1px solid #355148;border-radius:11px;background:#101819;box-shadow:0 20px 60px #0003}.prompt-head{display:flex;justify-content:space-between;align-items:center;padding:14px 17px;border-bottom:1px solid #293935;background:#141e1e}.prompt-head>div{display:flex;align-items:center;gap:9px;font-size:10px}.terminal-dot{width:7px;height:7px;border-radius:50%;background:#8be1bf;box-shadow:0 0 12px #86dbb499}.prompt-language{color:#7e958c;font-size:7px;letter-spacing:1.2px}.prompt-card pre{min-height:201px;margin:0;padding:19px;color:#bdcec6;white-space:pre-wrap;overflow-wrap:anywhere;font:10px/1.85 ui-monospace,SFMono-Regular,monospace}.copy-button{display:flex;justify-content:space-between;align-items:center;width:calc(100% - 34px);margin:0 17px 14px;padding:11px 13px;border:0;border-radius:6px;background:var(--mint);color:#101915;font-size:10px;font-weight:800;cursor:pointer;transition:transform .2s,background .2s}.copy-button:hover{transform:translateY(-1px);background:#b7f4df}.copy-button span{font-size:14px}.prompt-foot{display:flex;justify-content:space-between;padding:12px 17px;border-top:1px solid #293935;color:#81958c;font-size:8px;letter-spacing:1px}.prompt-foot code{color:#b1dbcb;font-size:8px;letter-spacing:0}.connection-note{grid-column:1/-1;display:grid;grid-template-columns:30px 1fr 30px 1fr 30px 1fr;gap:12px;align-items:start;padding-top:12px}.connection-note>span{color:#7ac7a8;font:11px ui-monospace,monospace}.connection-note p{margin:0;color:#99aaa4;font-size:9px;line-height:1.7}.connection-note a{color:#c4eadb}.agents-section{padding-top:30px}.agent-client-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}.agent-client-grid article{display:grid;justify-items:start;gap:13px;padding:17px;border:1px solid #293835;border-radius:9px;background:#111919}.client-mark{display:grid;width:32px;height:32px;place-items:center;border:1px solid #40564d;border-radius:8px;color:#b3e9d3;font-size:15px}.client-mark.claude{color:#efae83}.client-mark.cursor{color:#91c8ef}.agent-client-grid strong{font-size:11px}.agent-client-grid small{color:#8e9e98;font-size:8px;line-height:1.5}.compatibility-note{margin-top:14px;color:#74867e;font-size:9px;line-height:1.7}.technology-section{display:grid;grid-template-columns:.9fr 1.1fr;gap:80px;padding-top:95px;padding-bottom:110px;border-top:1px solid #1e2a28}.tech-copy h2{margin-top:18px}.tech-stack{border-top:1px solid #32413c}.tech-stack article{display:grid;grid-template-columns:35px 1fr auto;align-items:center;gap:16px;padding:16px 9px;border-bottom:1px solid #32413c}.tech-stack article>span{color:#739583;font:9px ui-monospace,monospace}.tech-stack article div{display:grid;gap:5px}.tech-stack strong{font-size:12px;font-weight:600}.tech-stack small{color:#8c9b95;font-size:9px}.tech-stack b{color:#84ae9c;font-size:7px;letter-spacing:1.1px}.footer{max-width:1240px;min-height:96px;margin:auto;padding:22px 5.5%;display:flex;align-items:center;justify-content:space-between;border-top:1px solid #25312e}.footer>span{color:#72827c;font-size:9px}.footer>div{display:flex;gap:20px}.reveal{opacity:0;transform:translateY(18px);transition:opacity .7s ease,transform .7s ease}:global(.reveal.is-visible){opacity:1;transform:translateY(0)}
-    @media(max-width:900px){.hero{min-height:590px;grid-template-columns:1fr 1fr;padding-top:70px}.hero h1{font-size:55px;letter-spacing:-3px}.hero-visual{transform:scale(.86);transform-origin:center}.intro-section{grid-template-columns:.5fr 1.2fr;gap:30px}.intro-stats{grid-column:2;display:grid;grid-template-columns:repeat(3,1fr)}.intro-stats article{display:grid;gap:6px;border-right:1px solid #2a3935;border-bottom:0;padding:12px}.intro-stats article:last-child{border:0}.feature-grid{grid-template-columns:1fr 1fr}.feature-wide{grid-column:1/-1}.feature-wide .feature-art{height:150px}.agent-client-grid{grid-template-columns:repeat(3,1fr)}.technology-section{gap:40px}}
-    @media(max-width:650px){.topbar{height:67px;padding:0 18px}.nav-links{display:none}.nav-cta{padding:9px 10px;font-size:9px}.wordmark img{width:33px;height:33px}.hero{display:flex;min-height:auto;flex-direction:column;align-items:stretch;padding:75px 21px 0}.hero-copy{padding:0}.hero h1{max-width:520px;margin-top:21px;font-size:clamp(44px,12vw,61px);letter-spacing:-3px}.hero-lede{font-size:12px}.hero-proof{margin-top:28px}.hero-visual{width:115%;height:340px;margin:0 -7.5% 0;transform:scale(.9);transform-origin:center}.orbit-one{width:300px;height:300px}.orbit-two{width:245px;height:245px}.orbit-three{width:355px;height:355px}.node-core{left:35%;top:39%}.node-project{left:39%;top:11%}.node-memory{right:-1%;top:43%}.node-task{left:-1%;top:62%}.node-agent{left:39%;bottom:13%}.visual-caption{right:14%;bottom:0;font-size:7px}.hero-bottom{position:static;margin-top:-2px;padding:17px 0 20px;display:grid;gap:11px}.hero-bottom>div{gap:8px;font-size:7px}.intro-section,.features-section,.connection-section,.agents-section,.technology-section{padding:78px 21px}.intro-section{grid-template-columns:1fr;gap:18px}.intro-text h2,.section-heading h2,.connection-copy h2,.tech-copy h2{font-size:40px;letter-spacing:-1.8px}.intro-stats{grid-column:auto;grid-template-columns:1fr 1fr 1fr}.intro-stats article{padding:12px 7px}.intro-stats strong{font-size:17px}.intro-stats span{font-size:8px}.section-heading{display:block}.section-heading>p{max-width:none;margin-top:12px}.feature-grid{grid-template-columns:1fr}.feature-wide{grid-column:auto}.feature-card{min-height:0}.feature-art{height:175px}.connection-section{grid-template-columns:1fr;gap:24px;padding-top:75px;padding-bottom:74px}.connection-note{grid-template-columns:25px 1fr;gap:11px 9px}.prompt-card pre{min-height:0;font-size:9px}.agent-client-grid{grid-template-columns:1fr 1fr}.agent-client-grid article{padding:13px}.technology-section{grid-template-columns:1fr;gap:30px}.footer{padding:20px 21px;display:grid;grid-template-columns:1fr auto;gap:17px}.footer>.wordmark{grid-column:1}.footer>span{grid-column:1/-1;grid-row:2}.footer>div{grid-column:2;grid-row:1;display:grid;gap:9px;text-align:right}.reveal{opacity:1;transform:none}}
-    .hero-copy{animation:hero-enter .72s cubic-bezier(.2,.7,.2,1) both}.hero-visual{animation:hero-enter .9s .12s cubic-bezier(.2,.7,.2,1) both}.hero-bottom{animation:hero-enter .65s .28s ease-out both}.orbit{animation:orbit-breathe 7s ease-in-out infinite alternate}.orbit-two{animation-delay:-2.1s}.orbit-three{animation-delay:-4.2s}.node-core{isolation:isolate;animation:core-glow 4.4s ease-in-out infinite}.node-core>*{position:relative;z-index:1}.node-core:before,.node-core:after{position:absolute;inset:-8px;z-index:0;border:1px solid #99efd083;border-radius:17px;content:"";pointer-events:none;animation:logo-ripple 3.2s ease-out infinite}.node-core:after{inset:-14px;animation-delay:1.6s}.graph-edge{background-size:200% 100%;animation:edge-flow 3.8s linear infinite}.edge-b{animation-delay:-1.1s}.edge-c{animation-delay:-2.2s}.edge-d{animation-delay:-.6s}.node-project{animation:node-float 5.2s .1s ease-in-out infinite}.node-memory{animation:node-float 5.8s .7s ease-in-out infinite}.node-agent{animation:node-float 5.4s 1.1s ease-in-out infinite}.node-task{animation:node-float 6s .4s ease-in-out infinite}.visual-glow{animation:glow-breathe 5s ease-in-out infinite alternate}.feature-card,.agent-client-grid article{transition:transform .25s ease,border-color .25s ease,box-shadow .25s ease}.feature-card:hover,.agent-client-grid article:hover{transform:translateY(-4px);border-color:#497363;box-shadow:0 16px 40px #0003}.nav-cta,.button-primary,.button-quiet,.text-link{transition:transform .2s ease,color .2s ease,background .2s ease}.nav-cta:hover,.button-primary:hover{transform:translateY(-2px)}.button-quiet:hover,.text-link:hover{color:var(--mint)}.reveal{transition:opacity .68s ease,transform .68s cubic-bezier(.2,.7,.2,1)}
-    @keyframes hero-enter{from{opacity:0;translate:0 16px}to{opacity:1;translate:0 0}}@keyframes node-float{0%,100%{translate:0 0}50%{translate:0 -7px}}@keyframes orbit-breathe{from{opacity:.38}to{opacity:.78}}@keyframes core-glow{0%,100%{box-shadow:0 0 32px #77d6b022,0 16px 50px #0008}50%{box-shadow:0 0 48px #77d6b044,0 16px 50px #0008}}@keyframes glow-breathe{from{opacity:.55;scale:.94}to{opacity:1;scale:1.06}}@keyframes logo-ripple{0%{transform:scale(.94);opacity:.62}82%,100%{transform:scale(1.24);opacity:0}}@keyframes edge-flow{to{background-position:200% 0}}
-    @media(prefers-reduced-motion:reduce){:global(html){scroll-behavior:auto}.reveal{opacity:1;transform:none;transition:none}.copy-button,.feature-card,.agent-client-grid article,.nav-cta,.button-primary,.button-quiet,.text-link{transition:none}.hero-copy,.hero-visual,.hero-bottom,.orbit,.node-core,.node-core:before,.node-core:after,.node-project,.node-memory,.node-agent,.node-task,.visual-glow,.graph-edge{animation:none}}
+	:global(*) { box-sizing: border-box; }
+	:global(html) { scroll-behavior: smooth; }
+	:global(body) { margin: 0; background: #191c17; }
+	:global(::selection) { background: #aeb98a; color: #191c17; }
+
+	.landing {
+		--bg: #191c17;
+		--panel: #24271f;
+		--line: #3b4034;
+		--text: #f2eee3;
+		--muted: #b8b5a7;
+		--cyan: #b3bd8f;
+		--blue: #c29772;
+		--teal: #dfa284;
+		--violet: #b6bf90;
+		--display: 'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif;
+		--body: 'Instrument Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+		--mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+		min-height: 100vh;
+		overflow-x: hidden;
+		background: var(--bg);
+		color: var(--text);
+		font-family: var(--body);
+		font-size: 16px;
+		line-height: 1.6;
+	}
+
+	.wrap { width: 100%; max-width: 1240px; margin-inline: auto; padding-inline: clamp(20px, 5vw, 48px); }
+	.block { padding-block: clamp(72px, 10vw, 128px); }
+
+	a { color: inherit; }
+	:global(.landing a:focus-visible), :global(.landing button:focus-visible) {
+		outline: 2px solid var(--cyan);
+		outline-offset: 3px;
+		border-radius: 4px;
+	}
+
+	h1, h2, h3 { font-family: var(--display); font-weight: 600; margin: 0; letter-spacing: -0.03em; }
+	h2 { font-size: clamp(30px, 3.8vw, 46px); line-height: 1.08; text-wrap: balance; }
+	p { margin: 0; }
+
+	/* --- navegación --- */
+	.topbar { display: flex; align-items: center; justify-content: space-between; height: 76px; }
+	.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 600 20px var(--display); letter-spacing: -0.03em; }
+	.brand img { border-radius: 9px; display: block; }
+	.topbar nav { display: flex; gap: 32px; }
+	.topbar nav a, .footer nav a { color: var(--muted); text-decoration: none; font-size: 14.5px; transition: color 0.2s; }
+	.topbar nav a:hover, .footer nav a:hover { color: var(--text); }
+
+	.btn {
+		display: inline-flex; align-items: center; justify-content: center;
+		padding: 11px 18px; border-radius: 8px; border: 1px solid transparent;
+		font: 600 14.5px var(--body); text-decoration: none; cursor: pointer;
+		transition: background 0.2s, border-color 0.2s, transform 0.2s;
+	}
+	.btn-primary { background: var(--teal); color: #251b16; }
+	.btn-primary:hover { background: #edb497; }
+	.btn-primary:active { transform: translateY(1px); }
+	.btn-outline { border-color: #615347; color: var(--text); }
+	.btn-outline:hover { border-color: var(--cyan); }
+
+	.link { color: var(--text); text-decoration: underline; text-decoration-color: #685b48; text-underline-offset: 5px; font-size: 15px; transition: text-decoration-color 0.2s; }
+	.link:hover { text-decoration-color: var(--teal); }
+
+	/* --- hero --- */
+	.hero {
+		display: grid;
+		grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+		align-items: center;
+		gap: 24px;
+		padding-block: clamp(24px, 5vw, 56px) clamp(48px, 7vw, 96px);
+	}
+	.hero-copy { animation: settle 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
+	.hero h1 { font-size: clamp(42px, 5.6vw, 78px); line-height: 0.98; letter-spacing: -0.04em; text-wrap: balance; }
+	.lede { margin-top: 26px; max-width: 46ch; font-size: 18px; color: #c4c1b5; }
+	.actions { display: flex; align-items: center; gap: 28px; margin-top: 34px; flex-wrap: wrap; }
+	.fine { margin-top: 30px; max-width: 44ch; font-size: 14px; color: var(--muted); }
+
+	.hero-graph { position: relative; height: clamp(360px, 46vw, 600px); margin-right: -2%; }
+	.hero-graph canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; }
+	.hero-graph::before {
+		content: ''; position: absolute; inset: 14% 10%; z-index: -1; border-radius: 50%;
+		background: radial-gradient(closest-side, rgba(63, 155, 230, 0.16), rgba(72, 220, 185, 0.06) 60%, transparent);
+		filter: blur(30px);
+	}
+	.hint { position: absolute; left: 4%; bottom: 2%; font-size: 13px; color: #78849b; }
+
+	/* --- declaración --- */
+	.statement { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: clamp(32px, 6vw, 88px); align-items: end; border-top: 1px solid var(--line); }
+	.statement h2 { font-size: clamp(34px, 4.6vw, 60px); }
+	.statement p { color: #b7c0d1; max-width: 52ch; margin-bottom: 22px; }
+
+	/* --- funciones --- */
+	.section-title { margin-bottom: clamp(36px, 6vw, 72px); }
+	.feature { display: grid; grid-template-columns: 0.8fr 1.2fr; gap: clamp(28px, 6vw, 88px); align-items: center; padding-block: 36px; }
+	.feature + .feature { border-top: 1px solid var(--line); }
+	.feature.flip { grid-template-columns: 1.2fr 0.8fr; }
+	.feature.flip .feature-text { order: 2; }
+	.feature h3 { font-size: 26px; line-height: 1.15; margin-bottom: 12px; }
+	.feature-text p { color: #b0b9ca; max-width: 40ch; }
+
+	.panel { margin: 0; padding: 0; list-style: none; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+
+	.log li { display: grid; grid-template-columns: 88px 1fr auto; align-items: center; gap: 16px; padding: 18px 22px; font-size: 15px; }
+	.log li + li { border-top: 1px solid var(--line); }
+	.log time { color: #7c879d; font-size: 13px; white-space: nowrap; }
+	.tag { justify-self: start; padding: 3px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; }
+	.tag-decision { background: rgba(44, 195, 238, 0.14); color: #6fd8f5; }
+	.tag-note { background: rgba(72, 220, 185, 0.13); color: #7ce8cb; }
+	.tag-todo { background: rgba(164, 141, 242, 0.16); color: #c0b0f6; }
+
+	.tasks li { display: flex; align-items: center; gap: 14px; padding: 17px 22px; font-size: 15px; color: #b7c0d1; }
+	.tasks li + li { border-top: 1px solid var(--line); }
+	.tasks i { width: 16px; height: 16px; border-radius: 50%; border: 1.5px solid #5a6580; flex: none; }
+	.tasks span { flex: 1; }
+	.tasks b { font-size: 13px; font-weight: 500; color: #7c879d; }
+	.tasks .done i { background: var(--teal); border-color: var(--teal); }
+	.tasks .done span { text-decoration: line-through; text-decoration-color: #5a6580; }
+	.tasks .active { background: #29304a; color: var(--text); border-radius: 0; }
+	.tasks .active i { border-color: var(--cyan); box-shadow: 0 0 0 0 rgba(44, 195, 238, 0.5); animation: ping 2s ease-out infinite; }
+	.tasks .by { color: var(--cyan); }
+
+	.relations { padding: 20px; }
+	.relations svg { display: block; width: 100%; height: auto; max-height: 260px; }
+	.relations text { fill: #d2d9e8; font: 500 13px var(--body); }
+	.relations line { stroke: #4fb8c9; stroke-width: 2; }
+	.relations .faint { stroke: #3a4258; stroke-dasharray: 3 6; }
+	.relations .flow { stroke-dasharray: 6 8; animation: dash 1.6s linear infinite; }
+	.relations .flow.slow { animation-duration: 2.4s; }
+	.relations .edge-label { fill: #8995ad; font-size: 12px; }
+
+	/* --- conexión --- */
+	.connect { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: clamp(32px, 6vw, 80px); align-items: start; border-top: 1px solid var(--line); }
+	.connect-copy > p { margin-top: 18px; color: #b0b9ca; max-width: 42ch; }
+	.steps { margin: 32px 0 0; padding: 0; list-style: none; counter-reset: step; display: grid; gap: 18px; }
+	.steps li { counter-increment: step; position: relative; padding-left: 38px; font-size: 14.5px; color: var(--muted); max-width: 46ch; }
+	.steps li::before {
+		content: counter(step); position: absolute; left: 0; top: 1px; width: 24px; height: 24px;
+		display: grid; place-items: center; border: 1px solid #465069; border-radius: 50%;
+		font: 12px var(--mono); color: var(--teal);
+	}
+	.steps a { color: var(--text); text-underline-offset: 3px; }
+
+	.prompt { background: #171b25; border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+	.prompt-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 14px 20px; background: #1e2330; border-bottom: 1px solid var(--line); font-size: 14px; }
+	.prompt-head span { color: #7c879d; font-size: 13px; }
+	.prompt pre { margin: 0; padding: 22px 20px; font: 13px/1.8 var(--mono); color: #ccd3e2; white-space: pre-wrap; overflow-wrap: anywhere; }
+	.prompt-foot { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 14px 20px; border-top: 1px solid var(--line); }
+	.prompt-foot code { font: 12.5px var(--mono); color: #7ec9d9; overflow-wrap: anywhere; }
+	.prompt-foot .btn { flex: none; min-width: 132px; }
+	.prompt-foot .ok { background: #fff; }
+
+	/* --- clientes --- */
+	.clients { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: clamp(32px, 6vw, 80px); border-top: 1px solid var(--line); }
+	.clients-intro p { margin-top: 18px; color: #b0b9ca; max-width: 40ch; }
+	.client-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+	.client-list li { display: flex; justify-content: space-between; align-items: baseline; gap: 20px; padding: 18px 4px; border-bottom: 1px solid var(--line); transition: padding 0.25s, background 0.25s; }
+	.client-list li:hover { padding-inline: 14px; background: #20253400; background: #202534; }
+	.client-list strong { font: 600 19px var(--display); letter-spacing: -0.02em; }
+	.client-list span { font-size: 14px; color: var(--muted); text-align: right; }
+	.note { margin-top: 18px; font-size: 13.5px; color: #7c879d; max-width: 58ch; }
+
+	/* --- tecnología --- */
+	.tech { display: grid; grid-template-columns: 0.9fr 1.1fr; gap: clamp(32px, 6vw, 80px); border-top: 1px solid var(--line); }
+	.tech-copy p { margin: 18px 0 22px; color: #b0b9ca; max-width: 44ch; }
+	.stack { margin: 0; border-top: 1px solid var(--line); }
+	.stack div { display: grid; grid-template-columns: 150px 1fr auto; gap: 16px; align-items: baseline; padding: 18px 4px; border-bottom: 1px solid var(--line); }
+	.stack dt { font: 600 18px var(--display); letter-spacing: -0.02em; }
+	.stack dd { margin: 0; font-size: 14.5px; color: var(--muted); }
+	.stack span { font-size: 13px; color: var(--teal); }
+
+	/* --- pie --- */
+	.footer { display: flex; align-items: center; justify-content: space-between; gap: 20px; padding-block: 34px; border-top: 1px solid var(--line); }
+	.footer .brand { font-size: 17px; }
+	.footer p { font-size: 14px; color: #7c879d; }
+	.footer nav { display: flex; gap: 24px; }
+
+	/* --- movimiento --- */
+	@keyframes settle { from { opacity: 0; translate: 0 14px; } to { opacity: 1; translate: 0 0; } }
+	@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(44, 195, 238, 0.5); } 80%, 100% { box-shadow: 0 0 0 9px rgba(44, 195, 238, 0); } }
+	@keyframes dash { to { stroke-dashoffset: -28; } }
+
+	@media (prefers-reduced-motion: reduce) {
+		:global(html) { scroll-behavior: auto; }
+		.hero-copy, .tasks .active i, .relations .flow { animation: none; }
+		.btn, .client-list li { transition: none; }
+	}
+
+	/* --- responsive --- */
+	@media (max-width: 900px) {
+		.topbar nav { display: none; }
+		.hero { grid-template-columns: 1fr; }
+		.hero-graph { margin-right: 0; }
+		.statement, .feature, .feature.flip, .connect, .clients, .tech { grid-template-columns: 1fr; }
+		.feature.flip .feature-text { order: 0; }
+		.footer { flex-wrap: wrap; }
+	}
+	@media (max-width: 560px) {
+		.log li { grid-template-columns: 1fr auto; }
+		.log li p { grid-column: 1 / -1; grid-row: 2; }
+		.client-list li { flex-direction: column; gap: 2px; }
+		.client-list span { text-align: left; }
+		.stack div { grid-template-columns: 1fr auto; }
+		.stack dd { grid-column: 1 / -1; grid-row: 2; }
+		.prompt-foot { flex-direction: column; align-items: stretch; }
+	}
+	/* Paleta Mitpad: tierra oscura, salvia y terracota. */
+	.tag-decision { background: rgba(194, 151, 114, 0.15); color: #dfb18c; }
+	.tag-note { background: rgba(174, 185, 138, 0.15); color: #c2c99c; }
+	.tag-todo { background: rgba(217, 154, 121, 0.15); color: #e5a98b; }
+	.tasks li { color: #c4c1b5; }
+	.tasks i { border-color: #77765f; }
+	.tasks b, .log time, .note, .footer p { color: #aaa99b; }
+	.tasks .done i { background: var(--teal); border-color: var(--teal); }
+	.tasks .active { background: #34372c; color: var(--text); }
+	.tasks .active i { border-color: var(--cyan); box-shadow: 0 0 0 0 rgba(174, 185, 138, 0.5); }
+	.relations text { fill: #e8e2d4; }
+	.relations line { stroke: #b5a079; }
+	.relations .faint { stroke: #434438; }
+	.relations .edge-label, .prompt-head span { fill: #b5b09f; color: #b5b09f; }
+	.prompt { background: #1d201a; }
+	.prompt-head { background: #2b2d24; }
+	.prompt pre { color: #dedacc; }
+	.prompt-foot code { color: #d9bd96; }
+	.client-list li:hover { background: #2a2c23; }
+	.statement p, .feature-text p, .connect-copy > p, .clients-intro p, .tech-copy p { color: #c0beb2; }
 </style>
