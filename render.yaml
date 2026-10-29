@@ -18,7 +18,7 @@ services:
 
   - type: web
     runtime: node
-    name: mitpad-mcp
+    name: mitpad
     rootDir: mitpad
     buildCommand: corepack pnpm install --frozen-lockfile
     startCommand: corepack pnpm run mcp:http
