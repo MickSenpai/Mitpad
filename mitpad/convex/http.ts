@@ -241,6 +241,7 @@ const handler = httpAction(async (ctx, request) => {
 http.route({ pathPrefix: "/api/v1/", method: "GET", handler });
 http.route({ pathPrefix: "/api/v1/", method: "POST", handler });
 http.route({ pathPrefix: "/api/v1/", method: "PATCH", handler });
+http.route({ pathPrefix: "/api/v1/", method: "DELETE", handler });
 http.route({ pathPrefix: "/api/v1/", method: "OPTIONS", handler: httpAction(async () => new Response(null, { status: 204, headers: CORS })) });
 
 export default http;
