@@ -5,7 +5,10 @@ import { getAuthUserId } from "@convex-dev/auth/server";
 import { exigirWeb } from "./webAuth";
 
 const status = v.union(v.literal("backlog"), v.literal("todo"), v.literal("in_progress"), v.literal("review"), v.literal("done"), v.literal("blocked"));
+const relationType = v.union(v.literal("related_to"), v.literal("parent_of"), v.literal("depends_on"));
 const project = v.object({ id: v.id("projects"), name: v.string(), description: v.string(), status: v.union(v.literal("active"), v.literal("archived")) });
+const projectLink = v.object({ id: v.id("projectLinks"), sourceProjectId: v.id("projects"), targetProjectId: v.id("projects"), relationType, description: v.string(), createdAt: v.number() });
+const knowledge = v.object({ id: v.id("projectKnowledge"), projectId: v.id("projects"), kind: v.union(v.literal("module"), v.literal("function"), v.literal("data"), v.literal("capability"), v.literal("integration"), v.literal("decision")), title: v.string(), summary: v.string(), source: v.string(), tags: v.array(v.string()) });
 const task = v.object({ id: v.id("tasks"), projectId: v.id("projects"), title: v.string(), description: v.string(), status, priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent")), assigneeAgentId: v.union(v.id("agents"), v.null()), createdByType: v.union(v.literal("human"), v.literal("agent")), createdById: v.string(), updatedAt: v.number() });
 const note = v.object({ id: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), projectId: v.union(v.id("projects"), v.null()), updatedAt: v.number() });
 const image = v.object({ id: v.id("noteImages"), projectId: v.union(v.id("projects"), v.null()), noteId: v.union(v.string(), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), url: v.union(v.string(), v.null()), createdAt: v.number() });
@@ -64,13 +67,61 @@ export const asegurarWorkspace = mutation({
   },
 });
 
+// The owner explicitly requested a one-time link from the newly created password account
+// to Mitpad's existing personal workspace. Only the allowlisted account can claim it.
+export const vincularDatosAnteriores = mutation({
+  args: {},
+  returns: v.object({ linked: v.boolean(), notes: v.number(), projects: v.number(), workspaceName: v.string() }),
+  handler: async (ctx) => {
+    const { identity, userId, workspace } = await exigirWeb(ctx);
+    const email = typeof identity.email === "string" ? identity.email.trim().toLowerCase() : "";
+    const allowedEmail = env.MITPAD_WEB_ALLOWED_EMAIL?.trim().toLowerCase();
+    // This is also called during normal login. Other accounts should simply keep
+    // their private workspace and never learn anything about the legacy data.
+    if (!email || !allowedEmail || email !== allowedEmail) return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
+
+    const account = await ctx.db.query("webAccounts").withIndex("by_userId", q => q.eq("userId", userId)).unique();
+    if (!account) return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
+    const legacy = await ctx.db.query("workspaces").withIndex("by_ownerId", q => q.eq("ownerId", userIdPersonal())).unique();
+    if (!legacy) return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
+    if (account.workspaceId === legacy._id) return { linked: false, notes: 0, projects: 0, workspaceName: legacy.name };
+    if (workspace._id !== account.workspaceId) return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
+
+    const [currentProjects, currentTasks, currentNotes, currentLinks, currentImages, currentKnowledge] = await Promise.all([
+      ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).take(1),
+      ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).take(1),
+      ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).take(1),
+      ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).take(1),
+      ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).take(1),
+      ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).take(1),
+    ]);
+    if ([currentProjects, currentTasks, currentNotes, currentLinks, currentImages, currentKnowledge].some(rows => rows.length > 0)) {
+      return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
+    }
+
+    const notes = await ctx.db.query("notes")
+      .withIndex("by_userId_and_updatedAt", q => q.eq("userId", userIdPersonal()))
+      .take(501);
+    if (notes.length > 500 || notes.some(note => note.workspaceId && note.workspaceId !== legacy._id)) {
+      return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
+    }
+
+    const projects = await ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", legacy._id)).take(500);
+    for (const note of notes) if (!note.workspaceId) await ctx.db.patch(note._id, { workspaceId: legacy._id });
+    await ctx.db.patch(account._id, { workspaceId: legacy._id });
+    return { linked: true, notes: notes.filter(note => !note.workspaceId).length, projects: projects.length, workspaceName: legacy.name };
+  },
+});
+
 export const dashboard = query({
   args: {},
-  returns: v.object({ projects: v.array(project), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), clientType: v.string(), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
+  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), clientType: v.string(), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
   handler: async (ctx) => {
     const { workspace } = await exigirWeb(ctx);
-    const [projects, tasks, agents, events, notes, images] = await Promise.all([
+    const [projects, projectLinks, knowledge, tasks, agents, events, notes, images] = await Promise.all([
       ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(300),
+      ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("asc").take(1000),
+      ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).take(1000),
       ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(500),
       ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
       ctx.db.query("activityEvents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
@@ -79,12 +130,64 @@ export const dashboard = query({
     ]);
     return {
       projects: projects.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })),
+      projectLinks: projectLinks.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
+      knowledge: knowledge.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
       tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
       agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, clientType: a.clientType, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
       events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
       notes: notes.map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
       images: await Promise.all(images.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
     };
+  },
+});
+
+export const editarProyecto = mutation({
+  args: { projectId: v.id("projects"), name: v.string(), description: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const current = await ctx.db.get(args.projectId);
+    if (!current || current.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
+    const name = args.name.trim();
+    const description = args.description.trim();
+    if (!name || name.length > 120 || description.length > 20000) throw new ConvexError("Revisa el nombre y la descripción del proyecto.");
+    await ctx.db.patch(args.projectId, { name, description, updatedAt: Date.now() });
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: args.projectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "project_updated", entityType: "project", entityId: args.projectId, summary: `Actualizó el proyecto ${name}`, createdAt: Date.now() });
+    return null;
+  },
+});
+
+export const crearRelacionProyectos = mutation({
+  args: { sourceProjectId: v.id("projects"), targetProjectId: v.id("projects"), relationType, description: v.string() },
+  returns: v.id("projectLinks"),
+  handler: async (ctx, args) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    if (args.sourceProjectId === args.targetProjectId) throw new ConvexError("Elige dos proyectos diferentes.");
+    if (args.description.length > 1000) throw new ConvexError("La descripción supera 1000 caracteres.");
+    const [source, target] = await Promise.all([ctx.db.get(args.sourceProjectId), ctx.db.get(args.targetProjectId)]);
+    if (!source || !target || source.workspaceId !== workspace._id || target.workspaceId !== workspace._id) throw new ConvexError("Ambos proyectos deben pertenecer al workspace.");
+    const prior = await ctx.db.query("projectLinks").withIndex("by_sourceProjectId_and_targetProjectId", q => q.eq("sourceProjectId", args.sourceProjectId).eq("targetProjectId", args.targetProjectId)).unique();
+    const description = args.description.trim();
+    if (prior) {
+      if (prior.workspaceId !== workspace._id) throw new ConvexError("La relación pertenece a otro workspace.");
+      await ctx.db.patch(prior._id, { relationType: args.relationType, description: description || undefined, createdAt: Date.now() });
+      return prior._id;
+    }
+    const id = await ctx.db.insert("projectLinks", { workspaceId: workspace._id, sourceProjectId: args.sourceProjectId, targetProjectId: args.targetProjectId, relationType: args.relationType, description: description || undefined, createdAt: Date.now() });
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: args.sourceProjectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "project_updated", entityType: "project", entityId: args.sourceProjectId, summary: `Relacionó ${source.name} con ${target.name}`, details: description || undefined, createdAt: Date.now() });
+    return id;
+  },
+});
+
+export const borrarRelacionProyecto = mutation({
+  args: { linkId: v.id("projectLinks") },
+  returns: v.boolean(),
+  handler: async (ctx, { linkId }) => {
+    const { workspace } = await exigirWeb(ctx);
+    const link = await ctx.db.get(linkId);
+    if (!link || link.workspaceId !== workspace._id) return false;
+    await ctx.db.delete(linkId);
+    return true;
   },
 });
 
