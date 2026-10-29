@@ -8,6 +8,10 @@ services:
     buildCommand: corepack pnpm install --frozen-lockfile && corepack pnpm run build
     staticPublishPath: build
     autoDeployTrigger: checksPass
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
       - key: PUBLIC_CONVEX_URL
         sync: false
