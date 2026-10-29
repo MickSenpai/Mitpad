@@ -483,10 +483,15 @@ async fn sync_note_queue(client: &mut ConvexClient, db_path: &PathBuf) -> Result
         if operation == "DELETE" {
             let mut args = BTreeMap::new();
             arg(&mut args, "uuid", Value::from(note_id));
-            match client.mutation("desktopSync:deleteNote", args).await.map_err(|e| e.to_string())? {
+            match client
+                .mutation("desktopSync:deleteNote", args)
+                .await
+                .map_err(|e| e.to_string())?
+            {
                 FunctionResult::Value(_) => {
                     let db = Connection::open(db_path).map_err(|e| e.to_string())?;
-                    db.execute("DELETE FROM sync_queue WHERE id=?1", [queue_id]).map_err(|e| e.to_string())?;
+                    db.execute("DELETE FROM sync_queue WHERE id=?1", [queue_id])
+                        .map_err(|e| e.to_string())?;
                     sent += 1;
                     continue;
                 }
@@ -779,8 +784,13 @@ async fn pull_cloud_notes(
         };
         let id = text_field(&fields, "uuid").ok_or("Nota remota sin id.")?;
         if number_field(&fields, "deletedAt").is_some() {
-            db.execute("DELETE FROM sync_queue WHERE table_name='notes' AND record_id=?1", [&id]).map_err(|e| e.to_string())?;
-            db.execute("DELETE FROM notes WHERE id=?1", [&id]).map_err(|e| e.to_string())?;
+            db.execute(
+                "DELETE FROM sync_queue WHERE table_name='notes' AND record_id=?1",
+                [&id],
+            )
+            .map_err(|e| e.to_string())?;
+            db.execute("DELETE FROM notes WHERE id=?1", [&id])
+                .map_err(|e| e.to_string())?;
             continue;
         }
         let updated = number_field(&fields, "updatedAt").unwrap_or_default();
