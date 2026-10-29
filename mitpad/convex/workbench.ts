@@ -28,7 +28,7 @@ const commentValidator = v.object({
 });
 const eventValidator = v.object({
   id: v.id("activityEvents"), workspaceId: v.id("workspaces"), projectId: v.union(v.id("projects"), v.null()),
-  actorType, actorId: v.string(), eventType: v.union(v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("task_created"), v.literal("task_updated"), v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted")),
+  actorType, actorId: v.string(), eventType: v.union(v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("project_deleted"), v.literal("task_created"), v.literal("task_updated"), v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_updated"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted")),
   entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
   entityId: v.string(), summary: v.string(), details: v.union(v.string(), v.null()), createdAt: v.number(),
 });
@@ -339,6 +339,51 @@ export const actualizarProyectoAgente = internalMutation({
   handler: async (ctx, args) => {
     const { workspaceId, agentId, projectId, ...patch } = args;
     return updateProject(ctx, workspaceId, agentId, projectId, patch);
+  },
+});
+
+async function deleteProjectCascade(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor: Actor, projectId: Id<"projects">) {
+  const project = await ensureProject(ctx, workspaceId, projectId);
+
+  // Keep durable memory and files; remove only their association with the project.
+  for await (const note of ctx.db.query("notes").withIndex("by_projectId", q => q.eq("projectId", projectId))) {
+    if (note.workspaceId === workspaceId) await ctx.db.patch(note._id, { projectId: undefined, updatedAt: Date.now() });
+  }
+  for await (const image of ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId))) {
+    if (image.workspaceId === workspaceId) await ctx.db.patch(image._id, { projectId: undefined });
+  }
+
+  for await (const task of ctx.db.query("tasks").withIndex("by_projectId_and_updatedAt", q => q.eq("projectId", projectId))) {
+    if (task.workspaceId !== workspaceId) continue;
+    for await (const comment of ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", q => q.eq("taskId", task._id))) {
+      if (comment.workspaceId === workspaceId) await ctx.db.delete(comment._id);
+    }
+    await ctx.db.delete(task._id);
+  }
+  for await (const item of ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
+    await ctx.db.delete(item._id);
+  }
+  for await (const link of ctx.db.query("projectLinks").withIndex("by_sourceProjectId_and_targetProjectId", q => q.eq("sourceProjectId", projectId))) {
+    if (link.workspaceId === workspaceId) await ctx.db.delete(link._id);
+  }
+  for await (const link of ctx.db.query("projectLinks").withIndex("by_targetProjectId", q => q.eq("targetProjectId", projectId))) {
+    if (link.workspaceId === workspaceId) await ctx.db.delete(link._id);
+  }
+  for await (const event of ctx.db.query("activityEvents").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId))) {
+    if (event.workspaceId === workspaceId) await ctx.db.patch(event._id, { projectId: undefined });
+  }
+
+  await ctx.db.delete(projectId);
+  await addEvent(ctx, { workspaceId, actor, eventType: "project_deleted", entityType: "project", entityId: projectId, summary: `Eliminó el proyecto ${project.name}` });
+  return { deleted: true as const, projectName: project.name };
+}
+
+export const borrarProyectoAgente = internalMutation({
+  args: { workspaceId: v.id("workspaces"), agentId: v.id("agents"), projectId: v.id("projects") },
+  returns: v.object({ deleted: v.boolean(), projectName: v.string() }),
+  handler: async (ctx, args) => {
+    const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);
+    return deleteProjectCascade(ctx, args.workspaceId, { kind: "agent", id: agent._id }, args.projectId);
   },
 });
 

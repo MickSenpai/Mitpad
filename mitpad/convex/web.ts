@@ -3,6 +3,7 @@ import { env, mutation, query } from "./_generated/server";
 import { hashAgentApiKey, userIdPersonal } from "./acceso";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { exigirWeb } from "./webAuth";
+import type { Doc, Id } from "./_generated/dataModel";
 
 const status = v.union(v.literal("backlog"), v.literal("todo"), v.literal("in_progress"), v.literal("review"), v.literal("done"), v.literal("blocked"));
 const relationType = v.union(v.literal("related_to"), v.literal("parent_of"), v.literal("depends_on"));
@@ -115,7 +116,7 @@ export const vincularDatosAnteriores = mutation({
 
 export const dashboard = query({
   args: {},
-  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), clientType: v.string(), credentialMode: v.union(v.literal("local"), v.literal("mcp"), v.null()), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
+  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string(), credentialMode: v.union(v.literal("local"), v.literal("mcp"), v.null()), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
   handler: async (ctx) => {
     const { workspace } = await exigirWeb(ctx);
     const [projects, projectLinks, knowledge, tasks, agents, events, notes, images] = await Promise.all([
@@ -133,7 +134,7 @@ export const dashboard = query({
       projectLinks: projectLinks.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
       knowledge: knowledge.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
       tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
-      agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
+      agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, modelProvider: a.modelProvider, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
       events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
       notes: notes.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
       images: await Promise.all(images.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
@@ -154,6 +155,51 @@ export const editarProyecto = mutation({
     await ctx.db.patch(args.projectId, { name, description, updatedAt: Date.now() });
     await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: args.projectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "project_updated", entityType: "project", entityId: args.projectId, summary: `Actualizó el proyecto ${name}`, createdAt: Date.now() });
     return null;
+  },
+});
+
+export const borrarProyecto = mutation({
+  args: { projectId: v.string() },
+  returns: v.object({ deleted: v.boolean(), projectName: v.string() }),
+  handler: async (ctx, { projectId }) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    let project = await ctx.db.query("projects")
+      .withIndex("by_workspaceId_and_clientId", q => q.eq("workspaceId", workspace._id).eq("clientId", projectId))
+      .unique();
+    if (!project) {
+      try { project = await ctx.db.get(projectId as Id<"projects">); }
+      catch { project = null; }
+    }
+    if (!project || project.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
+    const cloudProjectId = project._id;
+    const name = project.name;
+
+    for await (const note of ctx.db.query("notes").withIndex("by_projectId", q => q.eq("projectId", cloudProjectId))) {
+      if (note.workspaceId === workspace._id) await ctx.db.patch(note._id, { projectId: undefined, updatedAt: Date.now() });
+    }
+    for await (const image of ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", cloudProjectId))) {
+      if (image.workspaceId === workspace._id) await ctx.db.patch(image._id, { projectId: undefined });
+    }
+    for await (const task of ctx.db.query("tasks").withIndex("by_projectId_and_updatedAt", q => q.eq("projectId", cloudProjectId))) {
+      if (task.workspaceId !== workspace._id) continue;
+      for await (const comment of ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", q => q.eq("taskId", task._id))) {
+        if (comment.workspaceId === workspace._id) await ctx.db.delete(comment._id);
+      }
+      await ctx.db.delete(task._id);
+    }
+    for await (const item of ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id).eq("projectId", cloudProjectId))) await ctx.db.delete(item._id);
+    for await (const link of ctx.db.query("projectLinks").withIndex("by_sourceProjectId_and_targetProjectId", q => q.eq("sourceProjectId", cloudProjectId))) {
+      if (link.workspaceId === workspace._id) await ctx.db.delete(link._id);
+    }
+    for await (const link of ctx.db.query("projectLinks").withIndex("by_targetProjectId", q => q.eq("targetProjectId", cloudProjectId))) {
+      if (link.workspaceId === workspace._id) await ctx.db.delete(link._id);
+    }
+    for await (const event of ctx.db.query("activityEvents").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", cloudProjectId))) {
+      if (event.workspaceId === workspace._id) await ctx.db.patch(event._id, { projectId: undefined });
+    }
+    await ctx.db.delete(cloudProjectId);
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "project_deleted", entityType: "project", entityId: cloudProjectId, summary: `Eliminó el proyecto ${name}`, createdAt: Date.now() });
+    return { deleted: true, projectName: name };
   },
 });
 
@@ -230,6 +276,37 @@ export const revocarCredencialAgente = mutation({
   },
 });
 
+
+export const editarAgente = mutation({
+  args: { agentId: v.id("agents"), name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const agent = await ctx.db.get(args.agentId);
+    if (!agent || agent.workspaceId !== workspace._id) throw new ConvexError("El agente no pertenece al workspace.");
+    if (!args.name.trim() || args.name.length > 100 || args.model.length > 120 || args.modelProvider.length > 80 || !args.clientType.trim() || args.clientType.length > 80) throw new ConvexError("Revisa los datos del agente.");
+    await ctx.db.patch(args.agentId, { name: args.name.trim(), model: args.model.trim() || "auto", modelProvider: args.modelProvider.trim() || "auto", clientType: args.clientType.trim() });
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "agent_updated", entityType: "agent", entityId: args.agentId, summary: `Actualizó el agente ${args.name.trim()}`, createdAt: Date.now() });
+    return null;
+  },
+});
+
+
+export const desactivarAgente = mutation({
+  args: { agentId: v.id("agents") }, returns: v.boolean(),
+  handler: async (ctx, { agentId }) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const agent = await ctx.db.get(agentId);
+    if (!agent || agent.workspaceId !== workspace._id) return false;
+    if (agent.name.trim().toLowerCase() === "meido") throw new ConvexError("Meido es el agente principal y no se puede desactivar.");
+    if (agent.active) {
+      await ctx.db.patch(agentId, { active: false });
+      await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "agent_revoked", entityType: "agent", entityId: agentId, summary: `Desactivó el agente ${agent.name}`, createdAt: Date.now() });
+    }
+    return true;
+  },
+});
+
 export const crearProyecto = mutation({
   args: { name: v.string(), description: v.optional(v.string()) }, returns: project,
   handler: async (ctx, args) => {
@@ -257,14 +334,68 @@ export const crearTarea = mutation({
 });
 
 export const actualizarTarea = mutation({
-  args: { taskId: v.id("tasks"), status }, returns: v.null(),
-  handler: async (ctx, { taskId, status: nextStatus }) => {
+  args: {
+    taskId: v.id("tasks"), status: v.optional(status),
+    title: v.optional(v.string()), description: v.optional(v.string()),
+    priority: v.optional(v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent"))),
+    assigneeAgentId: v.optional(v.union(v.id("agents"), v.null())),
+  }, returns: v.null(),
+  handler: async (ctx, args) => {
     const { workspace, identity } = await exigirWeb(ctx);
-    const current = await ctx.db.get(taskId);
+    const current = await ctx.db.get(args.taskId);
     if (!current || current.workspaceId !== workspace._id) throw new ConvexError("La tarea no pertenece al workspace.");
-    const now = Date.now(); await ctx.db.patch(taskId, { status: nextStatus, updatedAt: now });
-    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: current.projectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "task_updated", entityType: "task", entityId: taskId, summary: `Movió ${current.title} a ${nextStatus}`, createdAt: now });
+    const patch: Partial<Doc<"tasks">> = { updatedAt: Date.now() };
+    if (args.status !== undefined) patch.status = args.status;
+    if (args.title !== undefined) {
+      if (!args.title.trim() || args.title.length > 200) throw new ConvexError("El título debe tener entre 1 y 200 caracteres.");
+      patch.title = args.title.trim();
+    }
+    if (args.description !== undefined) {
+      if (args.description.length > 50000) throw new ConvexError("La descripción supera el límite permitido.");
+      patch.description = args.description.trim();
+    }
+    if (args.priority !== undefined) patch.priority = args.priority;
+    if (args.assigneeAgentId !== undefined) {
+      if (args.assigneeAgentId !== null) {
+        const agent = await ctx.db.get(args.assigneeAgentId);
+        if (!agent || agent.workspaceId !== workspace._id || !agent.active) throw new ConvexError("El agente no está disponible en este workspace.");
+        patch.assigneeAgentId = args.assigneeAgentId;
+      } else patch.assigneeAgentId = undefined;
+    }
+    await ctx.db.patch(args.taskId, patch);
+    const updated = await ctx.db.get(args.taskId);
+    const summary = args.status !== undefined && args.status !== current.status
+      ? `Movió ${current.title} a ${args.status}`
+      : `Actualizó la tarea ${updated?.title ?? current.title}`;
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: current.projectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "task_updated", entityType: "task", entityId: args.taskId, summary, createdAt: Date.now() });
     return null;
+  },
+});
+
+export const comentariosTarea = query({
+  args: { taskId: v.id("tasks") },
+  returns: v.array(v.object({ id: v.id("taskComments"), kind: v.union(v.literal("message"), v.literal("instruction"), v.literal("question"), v.literal("answer"), v.literal("decision"), v.literal("update")), content: v.string(), authorType: v.union(v.literal("human"), v.literal("agent")), authorId: v.string(), createdAt: v.number() })),
+  handler: async (ctx, { taskId }) => {
+    const { workspace } = await exigirWeb(ctx);
+    const taskDoc = await ctx.db.get(taskId);
+    if (!taskDoc || taskDoc.workspaceId !== workspace._id) throw new ConvexError("La tarea no pertenece al workspace.");
+    const comments = await ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", q => q.eq("taskId", taskId)).order("asc").take(500);
+    return comments.filter(comment => comment.workspaceId === workspace._id).map(comment => ({ id: comment._id, kind: comment.kind, content: comment.content, authorType: comment.authorType, authorId: comment.authorId, createdAt: comment.createdAt }));
+  },
+});
+
+export const crearComentarioTarea = mutation({
+  args: { taskId: v.id("tasks"), kind: v.union(v.literal("message"), v.literal("instruction"), v.literal("question"), v.literal("answer"), v.literal("decision"), v.literal("update")), content: v.string() },
+  returns: v.id("taskComments"),
+  handler: async (ctx, args) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const taskDoc = await ctx.db.get(args.taskId);
+    if (!taskDoc || taskDoc.workspaceId !== workspace._id) throw new ConvexError("La tarea no pertenece al workspace.");
+    if (!args.content.trim() || args.content.length > 20000) throw new ConvexError("El comentario debe tener entre 1 y 20,000 caracteres.");
+    const now = Date.now();
+    const id = await ctx.db.insert("taskComments", { workspaceId: workspace._id, projectId: taskDoc.projectId, taskId: args.taskId, authorType: "human", authorId: identity.tokenIdentifier, kind: args.kind, content: args.content.trim(), createdAt: now });
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: taskDoc.projectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "comment_created", entityType: "comment", entityId: id, summary: `Comentó en ${taskDoc.title}`, createdAt: now });
+    return id;
   },
 });
 
@@ -308,24 +439,30 @@ export const borrarNota = mutation({
 });
 
 export const crearUrlSubidaImagen = mutation({
-  args: { projectId: v.id("projects") }, returns: v.string(),
-  handler: async (ctx, { projectId }) => {
-    const { workspace } = await exigirWeb(ctx); const projectDoc = await ctx.db.get(projectId);
-    if (!projectDoc || projectDoc.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
+  args: { projectId: v.optional(v.id("projects")), noteId: v.optional(v.string()) }, returns: v.string(),
+  handler: async (ctx, { projectId, noteId }) => {
+    const { workspace } = await exigirWeb(ctx);
+    if (!projectId && !noteId) throw new ConvexError("Vincula la imagen a un proyecto o una nota.");
+    if (projectId) { const projectDoc = await ctx.db.get(projectId); if (!projectDoc || projectDoc.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace."); }
+    if (noteId) { const noteDoc = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", noteId)).unique(); if (!noteDoc || noteDoc.workspaceId !== workspace._id || noteDoc.deletedAt !== undefined) throw new ConvexError("La nota no pertenece al workspace."); if (projectId && noteDoc.projectId && noteDoc.projectId !== projectId) throw new ConvexError("El proyecto no coincide con la nota."); }
     return await ctx.storage.generateUploadUrl();
   },
 });
 
 export const registrarImagen = mutation({
-  args: { projectId: v.id("projects"), storageId: v.id("_storage"), filename: v.string() }, returns: v.id("noteImages"),
+  args: { projectId: v.optional(v.id("projects")), noteId: v.optional(v.string()), storageId: v.id("_storage"), filename: v.string() }, returns: v.id("noteImages"),
   handler: async (ctx, args) => {
-    const { workspace } = await exigirWeb(ctx); const p = await ctx.db.get(args.projectId);
-    if (!p || p.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
+    const { workspace } = await exigirWeb(ctx);
+    if (!args.projectId && !args.noteId) throw new ConvexError("Vincula la imagen a un proyecto o una nota.");
+    if (args.projectId) { const p = await ctx.db.get(args.projectId); if (!p || p.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace."); }
+    if (args.noteId) { const noteDoc = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", args.noteId!)).unique(); if (!noteDoc || noteDoc.workspaceId !== workspace._id || noteDoc.deletedAt !== undefined) throw new ConvexError("La nota no pertenece al workspace."); if (args.projectId && noteDoc.projectId && noteDoc.projectId !== args.projectId) throw new ConvexError("El proyecto no coincide con la nota."); }
     const meta = await ctx.db.system.get("_storage", args.storageId);
     if (!meta || !["image/jpeg", "image/png", "image/webp", "image/gif"].includes(meta.contentType ?? "") || meta.size > 10 * 1024 * 1024) throw new ConvexError("Imagen inválida: usa JPEG, PNG, WebP o GIF de hasta 10 MB.");
-    const existing = await ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", args.projectId)).take(200);
-    if (existing.length >= 200 || existing.reduce((sum, img) => sum + img.size, 0) + meta.size > 50 * 1024 * 1024) throw new ConvexError("Se alcanzó el límite de imágenes del proyecto.");
-    return await ctx.db.insert("noteImages", { workspaceId: workspace._id, projectId: args.projectId, storageId: args.storageId, filename: args.filename.trim().slice(0, 255), contentType: meta.contentType!, size: meta.size, createdAt: Date.now() });
+    const existing = args.noteId
+      ? await ctx.db.query("noteImages").withIndex("by_noteId_and_createdAt", q => q.eq("noteId", args.noteId!)).take(201)
+      : await ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", args.projectId!)).take(201);
+    if (existing.length >= 200 || existing.reduce((sum, img) => sum + img.size, 0) + meta.size > 50 * 1024 * 1024) throw new ConvexError("Se alcanzó el límite de imágenes del elemento.");
+    return await ctx.db.insert("noteImages", { workspaceId: workspace._id, projectId: args.projectId, noteId: args.noteId, storageId: args.storageId, filename: args.filename.trim().slice(0, 255), contentType: meta.contentType!, size: meta.size, createdAt: Date.now() });
   },
 });
 

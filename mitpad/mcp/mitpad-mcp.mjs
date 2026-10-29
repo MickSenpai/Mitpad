@@ -50,6 +50,7 @@ export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_S
   });
   tool(server, "mitpad_projects_create", "Crea un proyecto en Mitpad.", { name: z.string().min(1).max(120), description: z.string().max(20_000).optional() }, (a) => request("projects", "POST", a));
   tool(server, "mitpad_projects_update", "Edita el nombre o contexto de un proyecto existente.", { project_id: id, name: z.string().min(1).max(120).optional(), description: z.string().max(20_000).optional() }, ({ project_id, ...body }) => request(`projects/${encodeURIComponent(project_id)}`, "PATCH", body));
+  tool(server, "mitpad_projects_delete", "Elimina permanentemente un proyecto solo cuando el usuario lo solicite. Borra sus tareas, comentarios, contexto y relaciones; conserva notas e imágenes y las deja sin proyecto.", { project_id: id }, ({ project_id }) => request(`projects/${encodeURIComponent(project_id)}`, "DELETE"));
 
   tool(server, "mitpad_tasks_list", "Consulta tareas; permite filtrar por proyecto y estado.", { project_id: id.optional(), status: taskStatus.optional() }, ({ project_id, status }) => {
     const query = new URLSearchParams(); if (project_id) query.set("project_id", project_id); if (status) query.set("status", status);
