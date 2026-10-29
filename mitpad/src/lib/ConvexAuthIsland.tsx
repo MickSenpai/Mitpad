@@ -12,6 +12,18 @@ export type AuthSession = {
 };
 type AuthCallback = (session: AuthSession) => void | Promise<void>;
 
+function safeAuthMessage(reason: unknown): string {
+  const detail = reason instanceof Error ? reason.message : String(reason);
+  if (detail.includes("InvalidAccountId")) return "No encontramos una cuenta de acceso con ese correo. Revisa la dirección o crea una cuenta para continuar.";
+  if (detail.includes("InvalidSecret")) return "El correo o la contraseña no coinciden. Revísalos e inténtalo de nuevo.";
+  if (detail.includes("TooManyFailedAttempts")) return "Hubo varios intentos fallidos. Espera un momento antes de volver a intentarlo.";
+  if (detail.includes("Ingresa un correo válido.")) return "Ingresa un correo electrónico válido.";
+  if (detail.includes("La contraseña debe tener al menos 10 caracteres.")) return "La contraseña debe tener al menos 10 caracteres.";
+  if (detail.includes("La contraseña no puede superar 128 caracteres.")) return "La contraseña no puede superar 128 caracteres.";
+  if (/failed to fetch|networkerror|network request failed/i.test(detail)) return "No se pudo conectar con el servicio de acceso. Revisa tu conexión e inténtalo de nuevo.";
+  return "No se pudo completar el acceso. Revisa tus datos e inténtalo de nuevo.";
+}
+
 function PasswordForm({ onSession }: { onSession: AuthCallback }) {
   const { signIn, signOut } = useAuthActions();
   const { isLoading, isAuthenticated, fetchAccessToken } = useConvexAuth();
@@ -32,7 +44,7 @@ function PasswordForm({ onSession }: { onSession: AuthCallback }) {
     void fetchAccessToken({ forceRefreshToken: false }).then((token) => {
       if (active) void callbackRef.current({ token, email: profile?.email ?? null, signOut: async () => { await signOut(); } });
     }).catch((reason: unknown) => {
-      if (active) setError(reason instanceof Error ? reason.message : String(reason));
+      if (active) setError(safeAuthMessage(reason));
     });
     return () => { active = false; };
   }, [isAuthenticated, profile, fetchAccessToken, signOut]);
@@ -42,7 +54,7 @@ function PasswordForm({ onSession }: { onSession: AuthCallback }) {
     const formData = new FormData(event.currentTarget);
     formData.set("flow", mode);
     try { await signIn("password", formData); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : "No se pudo validar la cuenta."); }
+    catch (reason) { setError(safeAuthMessage(reason)); }
     finally { setWorking(false); }
   }
 

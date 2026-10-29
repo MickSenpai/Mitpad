@@ -5,8 +5,9 @@
     import { api } from '../../convex/_generated/api';
     import { PUBLIC_CONVEX_URL } from '$env/static/public';
     import ThreeDGraph from '$lib/ThreeDGraph.svelte';
-    import WebWorkbench from '$lib/WebWorkbench.svelte';
+    import LandingPage from '$lib/LandingPage.svelte';
     import AccountProfile from '$lib/AccountProfile.svelte';
+    import { isMissingLegacyWorkspaceLink } from '$lib/convexCompat';
     import {
         createProject, listProjects, createTask, listTasks, updateTask,
         listProjectLinks, createProjectLink, deleteProjectLink,
@@ -139,10 +140,16 @@
         desktopToken = session.token;
         try {
             await desktopClient.mutation(api.web.asegurarWorkspace, {});
-            await desktopClient.mutation(api.web.vincularDatosAnteriores, {});
+            let migrationPending = false;
+            try { await desktopClient.mutation(api.web.vincularDatosAnteriores, {}); }
+            catch (migrationError) {
+                if (!isMissingLegacyWorkspaceLink(migrationError)) throw migrationError;
+                migrationPending = true;
+            }
             desktopAuthenticated = true; desktopAuthLoaded = true;
             status = { ...(status ?? { pending: 0, failed: 0, last_error: null, last_sync_at: null }), configured: true };
             if (!wasAuthenticated) { await loadWorkspace(); await syncNow(true); }
+            if (migrationPending) notice = 'Sesión iniciada. La conexión con los datos anteriores está pendiente de actualizar en Convex; tus datos locales permanecen intactos.';
         } catch (e) { desktopAuthenticated = false; desktopAuthLoaded = true; error = `No se autorizó el acceso al workspace: ${e}`; }
     }
 
@@ -480,7 +487,7 @@
 
 {#if isDesktop}<div class="desktop-auth-island" class:auth-hidden={desktopAuthenticated}><section class="desktop-auth-card"><img class="login-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><div class="eyebrow">CUENTA MITPAD</div><h1>Acceso a Mitpad</h1><p>Inicia sesión o crea una cuenta con correo y contraseña.</p><div class="desktop-auth-widget" bind:this={authNode}></div>{#if error}<small class="desktop-auth-error">{error}</small>{/if}</section></div>{/if}
 {#if !isDesktop}
-    <WebWorkbench />
+    <LandingPage />
 {:else if !desktopAuthLoaded}
     <main class="desktop-auth-screen"><section class="desktop-auth-card"><img class="brand-mark" src="/mitpad-mark.jpg" alt="Mitpad" /><h1>Conectando</h1><p>Preparando el acceso seguro a tu workspace.</p></section></main>
 {:else if !desktopAuthenticated}
