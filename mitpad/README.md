@@ -68,15 +68,33 @@ Keep agent API keys private. Do not commit the Convex token or credentials. The 
 
 Notes, workbench records, activity and attached image bytes are stored in Mitpad's local SQLite database. Notes use the offline-first Convex synchronization queue. Images attached to notes and projects retain a local copy and synchronize to Convex Storage when the desktop is authenticated. The desktop also downloads web images for offline access; the local ID prevents duplicate uploads on later syncs. Project images stay associated with their selected project.
 
-## MCP for OpenCode and other local agents
+## MCP remoto y local
 
-Mitpad includes a local stdio MCP server that connects to the authenticated agent REST API. It can read technical knowledge, list/create project relationships, list/create/update projects and tasks, read/write notes, add task comments and read recent activity. Each MCP process uses one registered agent's API key; do not use or expose the pilot's master `MITPAD_TOKEN` in OpenCode.
+El MCP ofrece herramientas para proyectos, relaciones, conocimiento, tareas, notas, comentarios y actividad. El transporte local `stdio` sigue disponible; además, el Blueprint de Render define un servicio web separado con Streamable HTTP stateless en `/mcp`. Cada solicitud remota debe llevar la clave individual de un agente en `Authorization: Bearer ...`; Render no recibe el token maestro `MITPAD_TOKEN`.
 
-1. Register a dedicated agent once through `POST https://<deployment>.convex.site/api/v1/agents/register` with `Authorization: Bearer <MITPAD_TOKEN>` and JSON fields `name`, `model`, `model_provider`, `client_type`, and `pilot`. For example, use `curl` with those placeholders and `Content-Type: application/json`. The response returns the agent's `api_key` once. Keep it in a password manager or a private environment variable.
-2. Set `MITPAD_CONVEX_SITE_URL` to the deployment's `https://<deployment>.convex.site` URL and `MITPAD_AGENT_API_KEY` to that agent key in the shell that starts OpenCode. Launch OpenCode from that same shell so the MCP child process inherits both values.
-3. Open the repository root in OpenCode. The root `opencode.json` starts `pnpm --dir mitpad run mcp`; no credentials are stored in the repository configuration.
+Para conectar un agente de una cuenta web:
 
-The MCP server speaks the local stdio transport and never writes logs to stdout. Start with read tools such as `mitpad_projects_list` and `mitpad_tasks_list`; create/update tools write to the shared workspace immediately.
+1. Despliega o sincroniza el Blueprint de Render. El servicio `mitpad-mcp` usa `MITPAD_CONVEX_SITE_URL` y el puerto `PORT` que Render proporciona. Su URL MCP queda en `https://mitpad-mcp.onrender.com/mcp` (si Render asigna otro hostname, usa ese).
+2. En Mitpad web, abre **Agentes**, crea una clave MCP para ese agente y cópiala. Mitpad solo guarda el hash; si se pierde, revoca esa clave y crea otra.
+3. En OpenCode, configura el MCP remoto y guarda la clave en el entorno privado desde el que arranca:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mitpad": {
+      "type": "remote",
+      "url": "https://mitpad-mcp.onrender.com/mcp",
+      "headers": { "Authorization": "Bearer {env:MITPAD_AGENT_API_KEY}" },
+      "enabled": true
+    }
+  }
+}
+```
+
+Define `MITPAD_AGENT_API_KEY` como variable de entorno. No la guardes en el repositorio ni uses `MITPAD_TOKEN` como credencial del MCP. El servicio incluye `/healthz`, restringe hosts y rechaza orígenes de navegador no configurados. Si un cliente MCP corre en un navegador, configura `MITPAD_MCP_ALLOWED_ORIGINS` con sus orígenes exactos en Render.
+
+Para el transporte local, define `MITPAD_CONVEX_SITE_URL` y `MITPAD_AGENT_API_KEY`, y ejecuta `pnpm run mcp`; el proceso usa stdio y nunca escribe logs en stdout.
 
 ## Windows installers
 

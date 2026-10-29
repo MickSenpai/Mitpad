@@ -35,6 +35,7 @@ export default defineSchema({
     clientType: v.string(),
     pilot: v.string(),
     apiKeyHash: v.string(),
+    credentialMode: v.optional(v.union(v.literal("local"), v.literal("mcp"))),
     active: v.boolean(),
     createdAt: v.number(),
     lastSeenAt: v.optional(v.number()),
@@ -143,7 +144,7 @@ export default defineSchema({
     eventType: v.union(
       v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"),
       v.literal("task_created"), v.literal("task_updated"),
-      v.literal("comment_created"), v.literal("agent_registered"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"),
+      v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"),
     ),
     entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
     entityId: v.string(),

@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-    "mcp": "node ./mcp/mitpad-mcp.mjs",
+    "mcp": "node ./mcp/mitpad-mcp-stdio.mjs",
+    "mcp:http": "node ./mcp/mitpad-mcp-http.mjs",
     "tauri": "tauri"
   },
   "license": "MIT",

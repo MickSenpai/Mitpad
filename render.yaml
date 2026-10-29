@@ -11,3 +11,15 @@ services:
     envVars:
       - key: PUBLIC_CONVEX_URL
         sync: false
+
+  - type: web
+    runtime: node
+    name: mitpad-mcp
+    rootDir: mitpad
+    buildCommand: corepack pnpm install --frozen-lockfile
+    startCommand: corepack pnpm run mcp:http
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: MITPAD_CONVEX_SITE_URL
+        value: https://brave-walrus-170.convex.site

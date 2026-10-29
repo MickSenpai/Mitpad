@@ -28,7 +28,7 @@ const commentValidator = v.object({
 });
 const eventValidator = v.object({
   id: v.id("activityEvents"), workspaceId: v.id("workspaces"), projectId: v.union(v.id("projects"), v.null()),
-  actorType, actorId: v.string(), eventType: v.union(v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("task_created"), v.literal("task_updated"), v.literal("comment_created"), v.literal("agent_registered"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked")),
+  actorType, actorId: v.string(), eventType: v.union(v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("task_created"), v.literal("task_updated"), v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked")),
   entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
   entityId: v.string(), summary: v.string(), details: v.union(v.string(), v.null()), createdAt: v.number(),
 });
