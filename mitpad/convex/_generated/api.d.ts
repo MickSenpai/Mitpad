@@ -17,6 +17,7 @@ import type * as images from "../images.js";
 import type * as knowledge from "../knowledge.js";
 import type * as links from "../links.js";
 import type * as notes from "../notes.js";
+import type * as privateVariables from "../privateVariables.js";
 import type * as projectLinks from "../projectLinks.js";
 import type * as sync from "../sync.js";
 import type * as web from "../web.js";
@@ -40,6 +41,7 @@ declare const fullApi: ApiFromModules<{
   knowledge: typeof knowledge;
   links: typeof links;
   notes: typeof notes;
+  privateVariables: typeof privateVariables;
   projectLinks: typeof projectLinks;
   sync: typeof sync;
   web: typeof web;
