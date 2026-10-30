@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { fetchWithRetry } from "./fetch-with-retry.mjs";
 
 const keyPattern = /^pha_[a-f0-9]{64}$/i;
 
@@ -13,12 +14,11 @@ export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_S
   if (!keyPattern.test(apiKey)) throw new Error("La clave de agente no tiene el formato esperado.");
 
   async function request(path, method = "GET", body) {
-    const response = await fetch(`${base}/api/v1/${path}`, {
+    const response = await fetchWithRetry(`${base}/api/v1/${path}`, {
       method,
       headers: { Authorization: `Bearer ${apiKey}`, ...(body ? { "Content-Type": "application/json" } : {}) },
       ...(body ? { body: JSON.stringify(body) } : {}),
-      signal: AbortSignal.timeout(20_000),
-    });
+    }, { timeoutMs: 12_000, retries: 1 });
     const text = await response.text();
     let data;
     try { data = text ? JSON.parse(text) : null; } catch { data = { error: text.slice(0, 500) }; }

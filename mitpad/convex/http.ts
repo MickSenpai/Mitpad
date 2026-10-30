@@ -242,6 +242,13 @@ const handler = httpAction(async (ctx, request) => {
   }
 });
 
+// Public dependency probe used by the MCP service's Render health check.
+http.route({
+  path: "/api/healthz",
+  method: "GET",
+  handler: httpAction(async () => json({ status: "ok", service: "mitpad-api" })),
+});
+
 http.route({ pathPrefix: "/api/v1/", method: "GET", handler });
 http.route({ pathPrefix: "/api/v1/", method: "POST", handler });
 http.route({ pathPrefix: "/api/v1/", method: "PATCH", handler });
