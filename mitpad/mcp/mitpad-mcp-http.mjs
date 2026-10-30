@@ -8,7 +8,13 @@ const convexSiteUrl = process.env.MITPAD_CONVEX_SITE_URL?.replace(/\/+$/, "");
 if (!convexSiteUrl || !/^https:\/\//i.test(convexSiteUrl)) throw new Error("Configura MITPAD_CONVEX_SITE_URL con una URL HTTPS.");
 const extraHosts = (process.env.MITPAD_MCP_ALLOWED_HOSTS ?? "").split(",").map((host) => host.trim()).filter(Boolean);
 const allowedHosts = [...new Set([renderHost, ...extraHosts, "localhost", "127.0.0.1"].filter(Boolean))];
-const allowedOrigins = new Set((process.env.MITPAD_MCP_ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean));
+const allowedOrigins = new Set([
+  "https://mitpad.com",
+  "https://www.mitpad.com",
+  "http://localhost:5173",
+  "http://localhost:3000",
+  ...(process.env.MITPAD_MCP_ALLOWED_ORIGINS ?? "").split(",").map((origin) => origin.trim()).filter(Boolean),
+]);
 const app = createMcpExpressApp({ host: "0.0.0.0", allowedHosts });
 
 function cors(req, res) {
@@ -17,7 +23,7 @@ function cors(req, res) {
   if (!allowedOrigins.has(origin)) return false;
   res.setHeader("Access-Control-Allow-Origin", origin);
   res.setHeader("Vary", "Origin");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, MCP-Protocol-Version, MCP-Session-Id");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, Accept, MCP-Protocol-Version, MCP-Session-Id");
   res.setHeader("Access-Control-Allow-Methods", "POST, GET, DELETE, OPTIONS");
   res.setHeader("Access-Control-Expose-Headers", "MCP-Protocol-Version, MCP-Session-Id");
   return true;

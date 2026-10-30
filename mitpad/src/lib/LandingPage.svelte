@@ -295,16 +295,17 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 
 	<section class="hero wrap">
 		<div class="hero-copy">
-			<h1>El contexto de tu proyecto, por fin conectado.</h1>
+			<p class="hero-kicker"><span></span> Un lugar para continuar donde quedó el equipo</p>
+			<h1>Que el trabajo no pierda el hilo.</h1>
 			<p class="lede">
-				Mitpad reúne proyectos, tareas, notas y conocimiento en un workspace que tus agentes
-				consultan con MCP. Tú decides qué hacen y ves cada movimiento.
+				Reúne proyectos, decisiones y pendientes en un mismo lugar. Tus agentes pueden consultar
+				ese contexto; tú eliges a quién invitar y qué puede hacer.
 			</p>
 			<div class="actions">
 				<a class="btn btn-primary" href="/app">Entrar a Mitpad</a>
 				<a class="link" href="#conectar">Conectar un agente ↓</a>
 			</div>
-			<p class="fine">Cada agente tiene su propia clave y puedes revocarla cuando quieras.</p>
+			<p class="fine">Cada agente entra con su propia llave. Si el equipo cambia, la revocas.</p>
 		</div>
 
 		<div class="hero-graph">
@@ -314,24 +315,24 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 	</section>
 
 	<section class="statement block wrap">
-		<h2>Tus agentes trabajan. Tú mantienes el mapa.</h2>
+		<h2>Menos volver a explicar. Más seguir adelante.</h2>
 		<div>
 			<p>
-				Mitpad es un centro de trabajo para coordinar personas y agentes de IA. Guarda el contexto
-				útil del proyecto (qué se decidió, qué falta y qué cambió) para que el equipo continúe sin
-				reconstruirlo desde cero en cada conversación.
+				Las decisiones no se pierden entre chats y las tareas no viven en una herramienta aparte.
+				Mitpad guarda lo que el equipo necesita para retomar el trabajo con claridad, incluso cuando
+				cambia quién está al frente.
 			</p>
 			<a class="link" href="/app">Explora tu workspace ↗</a>
 		</div>
 	</section>
 
 	<section class="features block wrap" id="como-funciona">
-		<h2 class="section-title">Todo el trabajo, en un mismo hilo</h2>
+		<h2 class="section-title">El trabajo real, con su contexto alrededor.</h2>
 
 		<article class="feature">
 			<div class="feature-text">
-				<h3>Una memoria que sirve al equipo</h3>
-				<p>Notas, decisiones y conocimiento de cada proyecto quedan guardados y disponibles para ti y para los agentes que autorices.</p>
+				<h3>Lo que ya aprendieron, se queda</h3>
+				<p>Guarda decisiones, notas y detalles que normalmente se pierden en una conversación. Compártelos solo con los agentes que autorices.</p>
 			</div>
 			<ul class="panel log" aria-label="Ejemplo de memoria del proyecto">
 				<li><span class="tag tag-decision">Decisión</span><p>Migrar la autenticación a Convex</p><time>hoy, 10:42</time></li>
@@ -342,8 +343,8 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 
 		<article class="feature flip">
 			<div class="feature-text">
-				<h3>Progreso que puedes seguir</h3>
-				<p>Proyectos, tareas, responsables y actividad reciente en un tablero. Revisa lo que hicieron los agentes y retoma donde quedó.</p>
+				<h3>Un tablero que cuenta qué pasó</h3>
+				<p>Revisa tareas, responsables y cambios recientes. Cuando un agente avanza algo, queda a la vista para que puedas retomarlo o corregir el rumbo.</p>
 			</div>
 			<ul class="panel tasks" aria-label="Ejemplo de tareas">
 				<li class="done"><i></i><span>Preparar el contexto</span><b>Hecha</b></li>
@@ -354,8 +355,8 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 
 		<article class="feature">
 			<div class="feature-text">
-				<h3>Un mapa entre proyectos</h3>
-				<p>El grafo conecta proyectos, tareas y conocimiento. Filtra por proyecto y explora cómo se relacionan las piezas del trabajo.</p>
+				<h3>Ve las conexiones, no solo las listas</h3>
+				<p>Explora cómo una decisión, una tarea y otro proyecto se tocan. El mapa ayuda a encontrar dependencias que suelen quedar escondidas.</p>
 			</div>
 			<div class="panel relations">
 				<svg viewBox="0 0 360 210" role="img" aria-label="Mitpad, Meido y CosechIA conectados entre sí">
@@ -426,7 +427,7 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 			<div><dt>SvelteKit</dt><dd>Interfaz web rápida y adaptable</dd><span>Web</span></div>
 			<div><dt>Convex</dt><dd>Datos reactivos, autenticación y archivos</dd><span>Backend</span></div>
 			<div><dt>MCP</dt><dd>Protocolo abierto para conectar agentes</dd><span>Agentes</span></div>
-			<div><dt>Clerk</dt><dd>Acceso seguro con cuenta personal</dd><span>Identidad</span></div>
+			<div><dt>Convex Auth</dt><dd>Acceso y espacio privado por cuenta</dd><span>Identidad</span></div>
 		</dl>
 	</section>
 
@@ -459,7 +460,7 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 
 		min-height: 100vh;
 		overflow-x: hidden;
-		background: var(--bg);
+		background: radial-gradient(ellipse at 82% 12%, rgba(174,185,138,.08), transparent 34%), var(--bg);
 		color: var(--text);
 		font-family: var(--body);
 		font-size: 16px;
@@ -481,7 +482,7 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 	p { margin: 0; }
 
 	/* --- navegación --- */
-	.topbar { display: flex; align-items: center; justify-content: space-between; height: 76px; }
+	.topbar { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between; height: 76px; border-bottom: 1px solid transparent; background: #191c17db; backdrop-filter: blur(14px); transition: border-color .2s; }
 	.brand { display: inline-flex; align-items: center; gap: 10px; text-decoration: none; font: 600 20px var(--display); letter-spacing: -0.03em; }
 	.brand img { border-radius: 9px; display: block; }
 	.topbar nav { display: flex; gap: 32px; }
@@ -512,19 +513,21 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 		padding-block: clamp(24px, 5vw, 56px) clamp(48px, 7vw, 96px);
 	}
 	.hero-copy { animation: settle 0.8s cubic-bezier(0.2, 0.7, 0.2, 1) both; }
-	.hero h1 { font-size: clamp(42px, 5.6vw, 78px); line-height: 0.98; letter-spacing: -0.04em; text-wrap: balance; }
+	.hero-kicker { display:flex; align-items:center; gap:10px; margin:0 0 21px; color:#c6c99d; font-size:12px; letter-spacing:.04em; }
+	.hero-kicker span { width:8px; height:8px; border-radius:50%; background:#b3bd8f; box-shadow:0 0 0 5px #b3bd8f1c; animation: breathe 2.8s ease-in-out infinite; }
+	.hero h1 { max-width: 11ch; font-size: clamp(48px, 6.2vw, 84px); line-height: 0.96; letter-spacing: -0.055em; text-wrap: balance; }
 	.lede { margin-top: 26px; max-width: 46ch; font-size: 18px; color: #c4c1b5; }
 	.actions { display: flex; align-items: center; gap: 28px; margin-top: 34px; flex-wrap: wrap; }
 	.fine { margin-top: 30px; max-width: 44ch; font-size: 14px; color: var(--muted); }
 
-	.hero-graph { position: relative; height: clamp(360px, 46vw, 600px); margin-right: -2%; }
+	.hero-graph { position: relative; height: clamp(360px, 46vw, 600px); margin-right: -2%; border-radius:50%; isolation:isolate; }
 	.hero-graph canvas { display: block; width: 100%; height: 100%; touch-action: pan-y; }
 	.hero-graph::before {
 		content: ''; position: absolute; inset: 14% 10%; z-index: -1; border-radius: 50%;
-		background: radial-gradient(closest-side, rgba(63, 155, 230, 0.16), rgba(72, 220, 185, 0.06) 60%, transparent);
+		background: radial-gradient(closest-side, rgba(174,185,138,.16), rgba(217,154,121,.07) 60%, transparent);
 		filter: blur(30px);
 	}
-	.hint { position: absolute; left: 4%; bottom: 2%; font-size: 13px; color: #78849b; }
+	.hint { position: absolute; left: 4%; bottom: 2%; padding:7px 11px; border:1px solid #ffffff13; border-radius:99px; background:#20231cc9; font-size: 12px; color: #c0beb2; }
 
 	/* --- declaración --- */
 	.statement { display: grid; grid-template-columns: 1.1fr 0.9fr; gap: clamp(32px, 6vw, 88px); align-items: end; border-top: 1px solid var(--line); }
@@ -540,7 +543,7 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 	.feature h3 { font-size: 26px; line-height: 1.15; margin-bottom: 12px; }
 	.feature-text p { color: #b0b9ca; max-width: 40ch; }
 
-	.panel { margin: 0; padding: 0; list-style: none; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+	.panel { margin: 0; padding: 0; list-style: none; background: linear-gradient(145deg,#292c23,var(--panel)); border: 1px solid var(--line); border-radius: 16px; box-shadow:0 18px 50px #00000014; }
 
 	.log li { display: grid; grid-template-columns: 88px 1fr auto; align-items: center; gap: 16px; padding: 18px 22px; font-size: 15px; }
 	.log li + li { border-top: 1px solid var(--line); }
@@ -618,12 +621,13 @@ Configura la conexión MCP para este cliente, comprueba que el servidor responde
 
 	/* --- movimiento --- */
 	@keyframes settle { from { opacity: 0; translate: 0 14px; } to { opacity: 1; translate: 0 0; } }
+	@keyframes breathe { 50% { box-shadow:0 0 0 9px #b3bd8f05; opacity:.7; } }
 	@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(44, 195, 238, 0.5); } 80%, 100% { box-shadow: 0 0 0 9px rgba(44, 195, 238, 0); } }
 	@keyframes dash { to { stroke-dashoffset: -28; } }
 
 	@media (prefers-reduced-motion: reduce) {
 		:global(html) { scroll-behavior: auto; }
-		.hero-copy, .tasks .active i, .relations .flow { animation: none; }
+		.hero-copy, .hero-kicker span, .tasks .active i, .relations .flow { animation: none; }
 		.btn, .client-list li { transition: none; }
 	}
 

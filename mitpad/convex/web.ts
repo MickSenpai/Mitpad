@@ -1,5 +1,6 @@
 import { ConvexError, v } from "convex/values";
-import { env, mutation, query } from "./_generated/server";
+import { env, internalMutation, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import { hashAgentApiKey, userIdPersonal } from "./acceso";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { exigirWeb } from "./webAuth";
@@ -53,12 +54,7 @@ export const asegurarWorkspace = mutation({
     if (!workspace) throw new ConvexError("No se pudo crear el workspace de esta cuenta.");
 
     if (workspace === legacyWorkspace) {
-      const legacyNotes = await ctx.db.query("notes")
-        .withIndex("by_userId_and_updatedAt", (q) => q.eq("userId", userIdPersonal()))
-        .take(500);
-      for (const note of legacyNotes) {
-        if (!note.workspaceId) await ctx.db.patch(note._id, { workspaceId: workspace._id });
-      }
+      await ctx.scheduler.runAfter(0, internal.web.migrarNotasLegadas, { workspaceId: workspace._id, cursor: null });
     }
 
     await ctx.db.insert("webAccounts", {
@@ -76,10 +72,11 @@ export const vincularDatosAnteriores = mutation({
   handler: async (ctx) => {
     const { identity, userId, workspace } = await exigirWeb(ctx);
     const email = typeof identity.email === "string" ? identity.email.trim().toLowerCase() : "";
+    const verified = (identity as typeof identity & { emailVerified?: boolean }).emailVerified === true;
     const allowedEmail = env.MITPAD_WEB_ALLOWED_EMAIL?.trim().toLowerCase();
     // This is also called during normal login. Other accounts should simply keep
     // their private workspace and never learn anything about the legacy data.
-    if (!email || !allowedEmail || email !== allowedEmail) return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
+    if (!verified || !email || !allowedEmail || email !== allowedEmail) return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
 
     const account = await ctx.db.query("webAccounts").withIndex("by_userId", q => q.eq("userId", userId)).unique();
     if (!account) return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
@@ -100,17 +97,28 @@ export const vincularDatosAnteriores = mutation({
       return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
     }
 
-    const notes = await ctx.db.query("notes")
-      .withIndex("by_userId_and_updatedAt", q => q.eq("userId", userIdPersonal()))
-      .take(501);
-    if (notes.length > 500 || notes.some(note => note.workspaceId && note.workspaceId !== legacy._id)) {
-      return { linked: false, notes: 0, projects: 0, workspaceName: workspace.name };
-    }
-
     const projects = await ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", legacy._id)).take(500);
-    for (const note of notes) if (!note.workspaceId) await ctx.db.patch(note._id, { workspaceId: legacy._id });
     await ctx.db.patch(account._id, { workspaceId: legacy._id });
-    return { linked: true, notes: notes.filter(note => !note.workspaceId).length, projects: projects.length, workspaceName: legacy.name };
+    await ctx.scheduler.runAfter(0, internal.web.migrarNotasLegadas, { workspaceId: legacy._id, cursor: null });
+    return { linked: true, notes: 0, projects: projects.length, workspaceName: legacy.name };
+  },
+});
+
+// Attach historical notes a page at a time. Each scheduled call has bounded reads and writes.
+export const migrarNotasLegadas = internalMutation({
+  args: { workspaceId: v.id("workspaces"), cursor: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { workspaceId, cursor }) => {
+    const page = await ctx.db.query("notes")
+      .withIndex("by_userId_and_updatedAt", q => q.eq("userId", userIdPersonal()))
+      .paginate({ numItems: 100, cursor });
+    for (const note of page.page) {
+      if (!note.workspaceId) await ctx.db.patch(note._id, { workspaceId });
+    }
+    if (!page.isDone) {
+      await ctx.scheduler.runAfter(0, internal.web.migrarNotasLegadas, { workspaceId, cursor: page.continueCursor });
+    }
+    return null;
   },
 });
 
@@ -171,35 +179,10 @@ export const borrarProyecto = mutation({
       catch { project = null; }
     }
     if (!project || project.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
-    const cloudProjectId = project._id;
-    const name = project.name;
-
-    for await (const note of ctx.db.query("notes").withIndex("by_projectId", q => q.eq("projectId", cloudProjectId))) {
-      if (note.workspaceId === workspace._id) await ctx.db.patch(note._id, { projectId: undefined, updatedAt: Date.now() });
-    }
-    for await (const image of ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", cloudProjectId))) {
-      if (image.workspaceId === workspace._id) await ctx.db.patch(image._id, { projectId: undefined });
-    }
-    for await (const task of ctx.db.query("tasks").withIndex("by_projectId_and_updatedAt", q => q.eq("projectId", cloudProjectId))) {
-      if (task.workspaceId !== workspace._id) continue;
-      for await (const comment of ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", q => q.eq("taskId", task._id))) {
-        if (comment.workspaceId === workspace._id) await ctx.db.delete(comment._id);
-      }
-      await ctx.db.delete(task._id);
-    }
-    for await (const item of ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id).eq("projectId", cloudProjectId))) await ctx.db.delete(item._id);
-    for await (const link of ctx.db.query("projectLinks").withIndex("by_sourceProjectId_and_targetProjectId", q => q.eq("sourceProjectId", cloudProjectId))) {
-      if (link.workspaceId === workspace._id) await ctx.db.delete(link._id);
-    }
-    for await (const link of ctx.db.query("projectLinks").withIndex("by_targetProjectId", q => q.eq("targetProjectId", cloudProjectId))) {
-      if (link.workspaceId === workspace._id) await ctx.db.delete(link._id);
-    }
-    for await (const event of ctx.db.query("activityEvents").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", cloudProjectId))) {
-      if (event.workspaceId === workspace._id) await ctx.db.patch(event._id, { projectId: undefined });
-    }
-    await ctx.db.delete(cloudProjectId);
-    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "project_deleted", entityType: "project", entityId: cloudProjectId, summary: `Eliminó el proyecto ${name}`, createdAt: Date.now() });
-    return { deleted: true, projectName: name };
+    await ctx.runMutation(internal.workbench.solicitarBorradoProyecto, {
+      workspaceId: workspace._id, projectId: project._id, actorType: "human", actorId: identity.tokenIdentifier,
+    });
+    return { deleted: false, projectName: project.name };
   },
 });
 
