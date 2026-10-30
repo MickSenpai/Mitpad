@@ -72,6 +72,21 @@ export default defineSchema({
     .index("by_sourceProjectId_and_targetProjectId", ["sourceProjectId", "targetProjectId"])
     .index("by_targetProjectId", ["targetProjectId"]),
 
+  // Cascades run in bounded scheduled batches so large projects can be removed safely.
+  projectDeletionJobs: defineTable({
+    workspaceId: v.id("workspaces"),
+    projectId: v.id("projects"),
+    projectName: v.string(),
+    phase: v.union(
+      v.literal("notes"), v.literal("images"), v.literal("comments"), v.literal("tasks"),
+      v.literal("knowledge"), v.literal("sourceLinks"), v.literal("targetLinks"),
+      v.literal("events"), v.literal("finish"),
+    ),
+    actorType: v.union(v.literal("human"), v.literal("agent")),
+    actorId: v.string(),
+    createdAt: v.number(),
+  }).index("by_projectId", ["projectId"]),
+
   // Technical summaries derived from source structure and project docs.
   // Runtime/user records and personal information are deliberately excluded.
   projectKnowledge: defineTable({
@@ -134,7 +149,8 @@ export default defineSchema({
   })
     .index("by_workspaceId_and_clientId", ["workspaceId", "clientId"])
     .index("by_taskId_and_createdAt", ["taskId", "createdAt"])
-    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"]),
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
+    .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),
 
   // Append-only: workbench mutations add events atomically with each change.
   activityEvents: defineTable({

@@ -28,18 +28,24 @@ pnpm dev
 
 ## Configuración de la web
 
-Configura `PUBLIC_CONVEX_URL` y `VITE_CLERK_PUBLISHABLE_KEY` en el entorno de build. En Clerk, activa la integración con Convex y los métodos de acceso que quieras ofrecer. En Convex configura `CLERK_FRONTEND_API_URL` y, si el workspace legado lo requiere, `MITPAD_WEB_ALLOWED_EMAIL`. No incluyas la clave secreta de Clerk en el navegador.
+Configura `PUBLIC_CONVEX_URL` en el entorno de build. El acceso web usa Convex Auth con correo y contraseña. En Convex configura el proveedor de autenticación y, si vas a enlazar un workspace anterior, `MITPAD_WEB_ALLOWED_EMAIL` junto con la verificación de correo.
 
-La autenticación usa la sesión Clerk para validar consultas y mutaciones en Convex. Cada cuenta tiene un workspace privado.
+La sesión de Convex Auth valida consultas y mutaciones. Cada cuenta tiene un workspace privado.
 
 ## MCP remoto
 
-El servidor remoto usa Streamable HTTP en `https://mitpad.onrender.com/mcp`. Para conectar un agente:
+El servidor remoto usa Streamable HTTP en `https://mitpad.onrender.com/mcp`. Desde **Workspace → Agentes**, selecciona el cliente, crea una clave y usa **Probar conexión completa**. La prueba inicia MCP, enumera herramientas y consulta proyectos en modo lectura.
 
-1. Abre **Agentes** en Mitpad y crea una credencial individual.
-2. Guarda la clave en un archivo local privado; se muestra una sola vez.
-3. Configura el cliente con la URL MCP y la cabecera `Authorization: Bearer <clave>`.
-4. Comprueba la conexión con una lectura. Revoca la credencial desde Mitpad cuando deje de usarse.
+Para Codex, copia la configuración desde Mitpad y añádela a `~/.codex/config.toml`. También puedes escribirla así, sustituyendo el valor por la clave individual:
+
+```toml
+[mcp_servers.mitpad]
+url = "https://mitpad.onrender.com/mcp"
+http_headers = { Authorization = "Bearer pha_REEMPLAZAR_CON_TU_CLAVE" }
+tool_timeout_sec = 60
+```
+
+No subas `config.toml` a Git: contiene la credencial. Después ejecuta `codex mcp list` y reinicia Codex para que cargue la conexión. En otros clientes, configura el mismo endpoint como Streamable HTTP y envía `Authorization: Bearer <clave>`.
 
 No incluyas la clave del agente en chats, el repositorio ni los logs. El servicio usa `MITPAD_CONVEX_SITE_URL` y el puerto `PORT` de Render; `MITPAD_TOKEN` solo permanece en el backend y no se comparte con agentes.
 

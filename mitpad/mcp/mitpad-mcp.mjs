@@ -30,13 +30,21 @@ export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_S
     return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
   }
   function tool(server, name, description, schema, handler) {
-    server.tool(name, description, schema, async (args) => {
+    const readOnly = /_(list|comments_list|activity_list)$/.test(name);
+    const destructive = /_(delete|remove|revoke)$/.test(name);
+    server.tool(name, description, schema, {
+      ...(readOnly ? { readOnlyHint: true } : {}),
+      ...(destructive ? { destructiveHint: true } : {}),
+      openWorldHint: false,
+    }, async (args) => {
       try { return result(await handler(args)); }
       catch (error) { return { isError: true, content: [{ type: "text", text: error instanceof Error ? error.message : String(error) }] }; }
     });
   }
 
-  const server = new McpServer({ name: "mitpad", version: "0.2.0" });
+  const server = new McpServer({ name: "mitpad", version: "0.3.0" }, {
+    instructions: "Mitpad is a private project workspace. Start with read-only list tools to learn the workspace. Keep actions within the selected project, use the user's language, and summarize what you changed. Only create, edit, or delete data when the user asks. Project and note deletion are permanent. If a tool fails, report the error instead of claiming success.",
+  });
   const id = z.string().min(1).max(100);
   const taskStatus = z.enum(["backlog", "todo", "in_progress", "review", "done", "blocked"]);
   const priority = z.enum(["low", "medium", "high", "urgent"]);

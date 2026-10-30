@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { exigirToken, userIdPersonal } from "./acceso";
@@ -344,39 +345,80 @@ export const actualizarProyectoAgente = internalMutation({
 
 async function deleteProjectCascade(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor: Actor, projectId: Id<"projects">) {
   const project = await ensureProject(ctx, workspaceId, projectId);
-
-  // Keep durable memory and files; remove only their association with the project.
-  for await (const note of ctx.db.query("notes").withIndex("by_projectId", q => q.eq("projectId", projectId))) {
-    if (note.workspaceId === workspaceId) await ctx.db.patch(note._id, { projectId: undefined, updatedAt: Date.now() });
+  const prior = await ctx.db.query("projectDeletionJobs").withIndex("by_projectId", q => q.eq("projectId", projectId)).unique();
+  if (!prior) {
+    await ctx.db.insert("projectDeletionJobs", {
+      workspaceId, projectId, projectName: project.name, phase: "notes",
+      actorType: actor.kind, actorId: actor.id, createdAt: Date.now(),
+    });
+    await ctx.scheduler.runAfter(0, internal.workbench.continuarBorradoProyecto, { projectId });
   }
-  for await (const image of ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId))) {
-    if (image.workspaceId === workspaceId) await ctx.db.patch(image._id, { projectId: undefined });
-  }
-
-  for await (const task of ctx.db.query("tasks").withIndex("by_projectId_and_updatedAt", q => q.eq("projectId", projectId))) {
-    if (task.workspaceId !== workspaceId) continue;
-    for await (const comment of ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", q => q.eq("taskId", task._id))) {
-      if (comment.workspaceId === workspaceId) await ctx.db.delete(comment._id);
-    }
-    await ctx.db.delete(task._id);
-  }
-  for await (const item of ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspaceId).eq("projectId", projectId))) {
-    await ctx.db.delete(item._id);
-  }
-  for await (const link of ctx.db.query("projectLinks").withIndex("by_sourceProjectId_and_targetProjectId", q => q.eq("sourceProjectId", projectId))) {
-    if (link.workspaceId === workspaceId) await ctx.db.delete(link._id);
-  }
-  for await (const link of ctx.db.query("projectLinks").withIndex("by_targetProjectId", q => q.eq("targetProjectId", projectId))) {
-    if (link.workspaceId === workspaceId) await ctx.db.delete(link._id);
-  }
-  for await (const event of ctx.db.query("activityEvents").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId))) {
-    if (event.workspaceId === workspaceId) await ctx.db.patch(event._id, { projectId: undefined });
-  }
-
-  await ctx.db.delete(projectId);
-  await addEvent(ctx, { workspaceId, actor, eventType: "project_deleted", entityType: "project", entityId: projectId, summary: `Eliminó el proyecto ${project.name}` });
-  return { deleted: true as const, projectName: project.name };
+  return { deleted: false as const, projectName: project.name };
 }
+
+export const solicitarBorradoProyecto = internalMutation({
+  args: { workspaceId: v.id("workspaces"), projectId: v.id("projects"), actorType, actorId: v.string() },
+  returns: v.object({ deleted: v.boolean(), projectName: v.string() }),
+  handler: async (ctx, args) => deleteProjectCascade(ctx, args.workspaceId, { kind: args.actorType, id: args.actorId }, args.projectId),
+});
+
+export const continuarBorradoProyecto = internalMutation({
+  args: { projectId: v.id("projects") },
+  returns: v.null(),
+  handler: async (ctx, { projectId }) => {
+    const job = await ctx.db.query("projectDeletionJobs").withIndex("by_projectId", q => q.eq("projectId", projectId)).unique();
+    if (!job) return null;
+    const actor: Actor = { kind: job.actorType, id: job.actorId };
+    const pageSize = 100;
+    if (job.phase === "finish") {
+      if (await ctx.db.get(projectId)) await ctx.db.delete(projectId);
+      await addEvent(ctx, { workspaceId: job.workspaceId, actor, eventType: "project_deleted", entityType: "project", entityId: projectId, summary: `Eliminó el proyecto ${job.projectName}` });
+      await ctx.db.delete(job._id);
+      return null;
+    }
+
+    let hasMore = false;
+    if (job.phase === "notes") {
+      const rows = await ctx.db.query("notes").withIndex("by_projectId", q => q.eq("projectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.patch(row._id, { projectId: undefined, updatedAt: Date.now() });
+      hasMore = rows.length === pageSize;
+    } else if (job.phase === "images") {
+      const rows = await ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.patch(row._id, { projectId: undefined });
+      hasMore = rows.length === pageSize;
+    } else if (job.phase === "comments") {
+      const rows = await ctx.db.query("taskComments").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.delete(row._id);
+      hasMore = rows.length === pageSize;
+    } else if (job.phase === "tasks") {
+      const rows = await ctx.db.query("tasks").withIndex("by_projectId_and_updatedAt", q => q.eq("projectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.delete(row._id);
+      hasMore = rows.length === pageSize;
+    } else if (job.phase === "knowledge") {
+      const rows = await ctx.db.query("projectKnowledge").withIndex("by_projectId_and_kind", q => q.eq("projectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.delete(row._id);
+      hasMore = rows.length === pageSize;
+    } else if (job.phase === "sourceLinks") {
+      const rows = await ctx.db.query("projectLinks").withIndex("by_sourceProjectId_and_targetProjectId", q => q.eq("sourceProjectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.delete(row._id);
+      hasMore = rows.length === pageSize;
+    } else if (job.phase === "targetLinks") {
+      const rows = await ctx.db.query("projectLinks").withIndex("by_targetProjectId", q => q.eq("targetProjectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.delete(row._id);
+      hasMore = rows.length === pageSize;
+    } else if (job.phase === "events") {
+      const rows = await ctx.db.query("activityEvents").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.patch(row._id, { projectId: undefined });
+      hasMore = rows.length === pageSize;
+    }
+
+    const phases: Doc<"projectDeletionJobs">["phase"][] = ["notes", "images", "comments", "tasks", "knowledge", "sourceLinks", "targetLinks", "events", "finish"];
+    const nextPhase = hasMore ? job.phase : phases[phases.indexOf(job.phase) + 1];
+    await ctx.db.patch(job._id, { phase: nextPhase });
+    await ctx.scheduler.runAfter(0, internal.workbench.continuarBorradoProyecto, { projectId });
+    return null;
+  },
+});
 
 export const borrarProyectoAgente = internalMutation({
   args: { workspaceId: v.id("workspaces"), agentId: v.id("agents"), projectId: v.id("projects") },
