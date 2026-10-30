@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ConvexAuthProvider, useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { ConvexReactClient } from "convex/react";
@@ -8,6 +8,7 @@ import { api } from "../../convex/_generated/api";
 export type AuthSession = {
   token: string | null;
   email: string | null;
+  fetchAccessToken: (options: { forceRefreshToken: boolean }) => Promise<string | null>;
   signOut: () => Promise<void>;
 };
 type AuthCallback = (session: AuthSession) => void | Promise<void>;
@@ -37,12 +38,12 @@ function PasswordForm({ onSession }: { onSession: AuthCallback }) {
   useEffect(() => {
     let active = true;
     if (!isAuthenticated) {
-      void callbackRef.current({ token: null, email: null, signOut: async () => { await signOut(); } });
+      void callbackRef.current({ token: null, email: null, fetchAccessToken: ({ forceRefreshToken }) => fetchAccessToken({ forceRefreshToken }), signOut: async () => { await signOut(); } });
       return () => { active = false; };
     }
     if (profile === undefined) return () => { active = false; };
     void fetchAccessToken({ forceRefreshToken: false }).then((token) => {
-      if (active) void callbackRef.current({ token, email: profile?.email ?? null, signOut: async () => { await signOut(); } });
+      if (active) void callbackRef.current({ token, email: profile?.email ?? null, fetchAccessToken: ({ forceRefreshToken }) => fetchAccessToken({ forceRefreshToken }), signOut: async () => { await signOut(); } });
     }).catch((reason: unknown) => {
       if (active) setError(safeAuthMessage(reason));
     });
@@ -74,8 +75,23 @@ function PasswordForm({ onSession }: { onSession: AuthCallback }) {
   </div>;
 }
 
+class AuthIslandBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  componentDidCatch(_error: Error, _info: ErrorInfo) {}
+  render() {
+    if (this.state.failed) return <div className="mitpad-auth-error" role="alert">
+      <strong>No pudimos restaurar tu sesión.</strong>
+      <p>Tu workspace sigue guardado. Reintenta la conexión o vuelve a iniciar sesión.</p>
+      <button type="button" onClick={() => window.location.reload()}>Reintentar</button>
+      <a href="/">Volver al inicio</a>
+    </div>;
+    return this.props.children;
+  }
+}
+
 function Bridge({ client, onSession }: { client: ConvexReactClient; onSession: AuthCallback }) {
-  return <ConvexAuthProvider client={client}><PasswordForm onSession={onSession} /></ConvexAuthProvider>;
+  return <AuthIslandBoundary><ConvexAuthProvider client={client}><PasswordForm onSession={onSession} /></ConvexAuthProvider></AuthIslandBoundary>;
 }
 
 export function mountAuthBridge(element: HTMLElement, convexUrl: string, onSession: AuthCallback): () => void {

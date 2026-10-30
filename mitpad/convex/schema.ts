@@ -213,6 +213,23 @@ export default defineSchema({
     .index("by_workspaceId_and_updatedAt", ["workspaceId", "updatedAt"])
     .index("by_projectId", ["projectId"]),
 
+  // The browser encrypts private-variable values before writing; Convex stores ciphertext only.
+  privateVaults: defineTable({
+    workspaceId: v.id("workspaces"),
+    salt: v.string(),
+    checkCiphertext: v.string(),
+    checkIv: v.string(),
+    createdAt: v.number(),
+  }).index("by_workspaceId", ["workspaceId"]),
+
+  privateVariables: defineTable({
+    workspaceId: v.id("workspaces"),
+    ciphertext: v.string(),
+    iv: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_workspaceId_and_updatedAt", ["workspaceId", "updatedAt"]),
+
   noteImages: defineTable({
     workspaceId: v.id("workspaces"),
     localId: v.optional(v.string()),

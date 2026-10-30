@@ -7,6 +7,7 @@
     import { api } from '../../convex/_generated/api';
     import ThreeDGraph from '$lib/ThreeDGraph.svelte';
     import AccountProfile from '$lib/AccountProfile.svelte';
+    import PrivateVault from '$lib/PrivateVault.svelte';
     import { isMissingLegacyWorkspaceLink } from '$lib/convexCompat';
 
     const MCP_ENDPOINT = 'https://mitpad.onrender.com/mcp';
@@ -20,6 +21,7 @@
     let authNode: HTMLDivElement;
     let authRoot: (() => void) | null = null;
     let authSignOut: (() => Promise<void>) | null = null;
+    let fetchAuthToken: AuthSession['fetchAccessToken'] | null = null;
     let lastAuthToken = '';
     let userEmail = 'Cuenta';
     let showProfile = false;
@@ -37,7 +39,7 @@
     let editingAgent: any = null, editAgentName = '', editAgentModel = '', editAgentProvider = '', editAgentClient = '';
     let selectedTask: any = null, taskComments: any[] = [], taskComment = '', taskCommentKind = 'message';
     let noteTitle = '', noteContent = '', noteProject: Id<'projects'> | '' = '', noteStatus: 'open' | 'attended' = 'open';
-    let section: 'projects' | 'board' | 'notes' | 'images' | 'activity' | 'agents' | 'graph' = 'projects';
+    let section: 'projects' | 'board' | 'notes' | 'images' | 'activity' | 'agents' | 'graph' | 'secrets' = 'projects';
     let selectedGraphNode: any = null;
     let graphFile: HTMLInputElement;
     $: visibleTasks = tasks.filter(t => (!selectedProject || t.projectId === selectedProject) && (taskStatusFilter === 'all' || t.status === taskStatusFilter) && (agentFilter === 'all' || t.assigneeAgentId === agentFilter || agentFilter === 'unassigned' && !t.assigneeAgentId) && (priorityFilter === 'all' || t.priority === priorityFilter) && (!search.trim() || `${t.title} ${t.description}`.toLowerCase().includes(search.trim().toLowerCase())));
@@ -71,7 +73,26 @@
 
     onMount(() => {
         if (!PUBLIC_CONVEX_URL) { error = 'Falta configurar PUBLIC_CONVEX_URL para la web.'; return; }
-        client = new ConvexHttpClient(PUBLIC_CONVEX_URL);
+        client = new ConvexHttpClient(PUBLIC_CONVEX_URL, { fetch: async (input, init) => {
+            const send = async (token: string | null) => {
+                const headers = new Headers(init?.headers);
+                if (token) headers.set('Authorization', `Bearer ${token}`);
+                else headers.delete('Authorization');
+                return fetch(input, { ...init, headers });
+            };
+            const token = await fetchAuthToken?.({ forceRefreshToken: false }) ?? null;
+            const response = await send(token);
+            let authRejected = response.status === 401;
+            if (!authRejected) {
+                try {
+                    const payload = await response.clone().json();
+                    authRejected = payload?.status === 'error' && /unauthenticated|not authenticated|invalid auth token|token.*expired/i.test(String(payload.errorMessage ?? ''));
+                } catch { /* Some Convex endpoints return non-JSON errors. */ }
+            }
+            if (!authRejected) return response;
+            const refreshedToken = await fetchAuthToken?.({ forceRefreshToken: true }) ?? null;
+            return refreshedToken && refreshedToken !== token ? send(refreshedToken) : response;
+        } });
         authRoot = mountAuthBridge(authNode, PUBLIC_CONVEX_URL, (session) => handleSession(session));
         const refreshWhenActive = () => {
             if (lastAuthToken && document.visibilityState === 'visible' && navigator.onLine && !busy) void refresh(true);
@@ -84,9 +105,10 @@
 
     async function handleSession(session: AuthSession) {
         authSignOut = session.signOut;
+        fetchAuthToken = session.fetchAccessToken;
         if (!client) return;
         if (!session.token) {
-            lastAuthToken = ''; client.clearAuth(); connected = false; clearData(); userEmail = 'Cuenta'; return;
+            lastAuthToken = ''; fetchAuthToken = null; client.clearAuth(); connected = false; clearData(); userEmail = 'Cuenta'; return;
         }
         userEmail = session.email ?? 'Cuenta';
         client.setAuth(session.token);
@@ -116,7 +138,13 @@
             if (selectedProject && !projects.some(p => p.id === selectedProject)) selectedProject = '';
             if (selectedNote && !notes.some(n => n.id === selectedNote)) selectedNote = '';
             connected = true; lastSync = Date.now(); if (!quiet) notice = 'Workspace actualizado desde Convex.';
-        } catch (e) { connected = false; error = `Falló la actualización del workspace: ${message(e)}`; }
+        } catch (e) {
+            connected = false;
+            const detail = message(e);
+            error = /\bnot found\b|\b404\b/i.test(detail)
+                ? 'El servidor respondió “Not found”. Puede que la web y el backend estén en versiones distintas. Reintenta; si persiste, la sesión puede necesitar volver a iniciarse.'
+                : `Falló la actualización del workspace: ${detail}`;
+        }
         finally { busy = false; }
     }
 
@@ -303,7 +331,13 @@
     async function signOut() { await authSignOut?.(); }
     async function openProfile() { showProfile = true; }
     function closeProfile() { showProfile = false; }
-    function message(value: unknown) { return value instanceof Error ? value.message : String(value); }
+    function message(value: unknown) {
+        const detail = value instanceof Error ? value.message : String(value);
+        if (/^\s*(?:Error:\s*)?Not found\s*$/i.test(detail) || /\bHTTP 404\b/i.test(detail)) {
+            return 'El servidor respondió “Not found”. La sesión puede seguir abierta; la web y Convex podrían estar en versiones distintas. Reintenta y, si persiste, cierra sesión y vuelve a entrar.';
+        }
+        return detail;
+    }
     function date(value: number) { return new Intl.DateTimeFormat('es-MX', { dateStyle: 'medium', timeStyle: 'short' }).format(value); }
 </script>
 
@@ -321,6 +355,7 @@
                     <button aria-label="Imágenes" title="Imágenes" class:active={section === 'images'} on:click={() => section = 'images'}><span>▧</span><span class="nav-text">Imágenes</span><span class="nav-count">{images.length}</span></button>
                     <button aria-label="Actividad" title="Actividad" class:active={section === 'activity'} on:click={() => section = 'activity'}><span>◷</span><span class="nav-text">Actividad</span></button>
                     <button aria-label="Agentes" title="Agentes" class:active={section === 'agents'} on:click={() => section = 'agents'}><span>⌘</span><span class="nav-text">Agentes</span><span class="nav-count">{agents.length}</span></button>
+                    <button aria-label="Variables privadas" title="Variables privadas" class:active={section === 'secrets'} on:click={() => section = 'secrets'}><span>⚿</span><span class="nav-text">Claves privadas</span></button>
                     <button aria-label="Mapa" title="Mapa" class:active={section === 'graph'} on:click={() => section = 'graph'}><span>◎</span><span class="nav-text">Mapa</span></button>
                 </nav>
                 <section class="sidebar-projects"><div class="nav-label">PROYECTOS</div>{#each projects.slice(0, 12) as project (project.id)}<button class="project-link" class:project-active={selectedProject === project.id} title={project.name} on:click={() => { selectedProject = project.id; section = 'board'; }}><i class="project-dot"></i>{project.name}</button>{/each}{#if !projects.length}<small class="side-empty">Aún no hay proyectos</small>{/if}</section>
@@ -328,7 +363,7 @@
             <div class="sidebar-bottom"><button class="sidebar-user" on:click={() => void openProfile()}><span class="pilot-avatar">{userEmail.slice(0, 1).toUpperCase()}</span><span class="pilot-text"><strong>{userEmail}</strong><small>Mi perfil</small></span></button><span class="cloud-indicator" class:cloud-on={connected} title={connected ? 'Sincronizado con Convex' : 'Sin conexión'}>●</span></div>
         </aside>
         <div class="main-area">
-            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? '● Conectado · 5 min' : '○ Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
+            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'secrets' ? 'Claves privadas' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? '● Conectado · 5 min' : '○ Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
             {#if error}<div class="alert error">{error}</div>{/if}{#if notice}<div class="alert notice">{notice}</div>{/if}
             <section class="dashboard">
         {#if !connected}<div class="reconnect-banner"><strong>Workspace sin actualizar</strong><span>Conservamos esta vista y volveremos a intentarlo automáticamente.</span><button on:click={() => void refresh()} disabled={busy}>{busy ? 'Conectando…' : 'Reintentar ahora'}</button></div>{/if}<div class="intro"><div><div class="eyebrow">SUPERVISIÓN DEL WORKSPACE</div><h1>Proyectos y agentes, de un vistazo</h1><p>Monitorea cambios, notas y archivos desde Convex.</p></div><div class="last-sync"><span>Última consulta</span><strong>{lastSync ? date(lastSync) : 'Conectando…'}</strong><small>{projects.length} proyectos · {tasks.length} tareas · {agents.length} agentes</small></div></div>
@@ -345,6 +380,7 @@
         {:else if section === 'notes'}<div class="content-grid"><section class="side-panel note-list"><div class="eyebrow">MEMORIA</div><h2>Notas conservadas</h2>{#each notes as n (n.id)}<div class="note-row-wrap"><button class="note-row" class:selected={selectedNote === n.id} on:click={() => chooseNote(n)}><strong>{n.title || 'Sin título'}</strong><small>{n.status === 'attended' ? 'Atendida' : 'Abierta'} · {projects.find(p => p.id === n.projectId)?.name ?? 'Sin proyecto'}</small></button><button class="note-delete" aria-label={`Eliminar nota ${n.title || 'sin título'}`} title="Eliminar nota" on:click={() => void deleteNote(n)} disabled={busy}>×</button></div>{/each}<button class="new-note" on:click={() => chooseNote()}>＋ Nueva nota</button></section><section class="work-panel note-editor"><div class="eyebrow">{selectedNote ? 'EDITAR NOTA' : 'NUEVA NOTA'}</div><input class="note-title" bind:value={noteTitle} placeholder="Título" /><div class="note-meta"><select aria-label="Proyecto asociado" bind:value={noteProject}><option value="">Sin proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Estado de nota" bind:value={noteStatus}><option value="open">Abierta</option><option value="attended">Atendida</option></select></div><textarea bind:value={noteContent} placeholder="Escribe contexto útil para ti y tus agentes…"></textarea><button class="primary" on:click={() => void saveNote()} disabled={busy}>Guardar nota</button>{#if selectedNote}<label class="upload note-upload">＋ Adjuntar imagen<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0], selectedNote)} /></label><div class="note-attachments">{#each images.filter(image => image.noteId === selectedNote) as image (image.id)}<figure><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><figcaption>{image.filename}<button on:click={() => void deleteImage(image)} aria-label={`Eliminar ${image.filename}`}>×</button></figcaption></figure>{/each}</div>{/if}</section></div>
         {:else if section === 'images'}<section class="work-panel image-library"><div class="panel-head"><div><div class="eyebrow">ARCHIVOS DEL PROYECTO</div><h2>Imágenes</h2></div><select aria-label="Proyecto para imágenes" bind:value={selectedProject}><option value="">Elige un proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p>Las imágenes se guardan en Convex Storage y quedan vinculadas al proyecto seleccionado. Límite: 10 MB por archivo.</p><label class="upload">{uploading ? 'Subiendo…' : '＋ Subir imagen'}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={!selectedProject || uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0])} /></label><div class="image-grid">{#each images.filter(i => !selectedProject || i.projectId === selectedProject) as image (image.id)}<article><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><div><strong>{image.filename}</strong><small>{projects.find(p => p.id === image.projectId)?.name ?? 'Proyecto'} · {(image.size / 1024).toFixed(0)} KB</small><button on:click={() => void deleteImage(image)}>Quitar</button></div></article>{/each}</div>{#if !images.length}<div class="empty">Todavía no hay imágenes.</div>{/if}</section>
         {:else if section === 'activity'}<section class="work-panel"><div class="panel-head"><div><div class="eyebrow">HISTORIAL</div><h2>Actividad reciente</h2></div><select class="activity-filter" aria-label="Filtrar actividad" bind:value={activityFilter}><option value="all">Todas</option><option value="agent">Agentes</option><option value="human">Personas</option></select></div><div class="events">{#each events.filter(e => activityFilter === 'all' || e.actorType === activityFilter) as e (e.id)}<article><i class:agent-event={e.actorType === 'agent'}></i><div><strong>{e.summary}</strong><small>{e.actorType === 'agent' ? `Agente ${e.actorId}` : 'Persona'} · {date(e.createdAt)}</small></div></article>{/each}{#if !events.length}<div class="empty">Aún no hay actividad registrada.</div>{/if}</div></section>
+        {:else if section === 'secrets'}{#if client}<PrivateVault {client} />{/if}
         {:else if section === 'agents'}<section class="work-panel"><div class="eyebrow">EQUIPO Y CONEXIONES</div><h2>Conecta tu agente en un momento</h2><p class="graph-hint">Elige Codex, crea una credencial y copia una configuración lista para pegar. Después probamos la conexión real con el servidor MCP y una lectura de tus proyectos.</p><div class="agent-connect-guide"><span class="guide-step">01</span><div><strong>Elige tu cliente</strong><p>La guía se adapta a Codex, OpenCode y otros clientes MCP.</p></div><span class="guide-step">02</span><div><strong>Crea una clave exclusiva</strong><p>Puedes revocarla cuando quieras; Mitpad conserva solo su hash.</p></div><span class="guide-step">03</span><div><strong>Prueba antes de usar</strong><p>Confirmamos el saludo MCP, la lista de herramientas y una lectura real.</p></div></div><form class="remote-agent-form" on:submit|preventDefault={createRemoteAgent}><label>Cliente<select bind:value={remoteAgentClient}><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="cursor">Cursor</option><option value="mcp">Otro cliente MCP</option></select></label><label>Nombre del agente<input bind:value={remoteAgentName} maxlength="100" required placeholder="Codex personal" /></label><label>Modelo<input bind:value={remoteAgentModel} maxlength="120" placeholder="auto" /></label><label>Proveedor<input bind:value={remoteAgentProvider} maxlength="80" placeholder="auto" /></label><button disabled={busy}>Crear y configurar</button></form>{#if remoteAgentKey}<div class="remote-agent-secret"><div><strong>Ahora configura Codex y comprueba la conexión</strong><p>La opción de Codex copia una tabla TOML lista para añadir a tu configuración local. Incluye la clave secreta: no pegues ese contenido en un repositorio ni lo compartas.</p></div><code>{remoteAgentKey}</code>{#if remoteAgentCheck}<p class="agent-key-check">{remoteAgentCheck}</p>{/if}<div class="agent-secret-actions"><button on:click={() => void copyRemoteAgentKey()}>Copiar solo la clave</button><button class="subtle-button" on:click={() => void copyRemoteAgentSetup()}>{remoteAgentClient === 'codex' ? 'Copiar configuración de Codex' : 'Copiar guía MCP'}</button><button class="subtle-button" on:click={() => void validateRemoteAgentKey()} disabled={remoteAgentChecking}>{remoteAgentChecking ? 'Probando servidor MCP…' : 'Probar conexión completa'}</button><button class="subtle-button" on:click={() => { remoteAgentKey = ''; remoteAgentCheck = ''; }}>Ocultar clave</button></div></div>{/if}<div class="eyebrow agent-list-label">AGENTES REGISTRADOS</div>{#if editingAgent}<form class="agent-edit-form" on:submit|preventDefault={saveAgentEdit}><strong>Editar {editingAgent.name}</strong><label>Nombre<input bind:value={editAgentName} required maxlength="100" /></label><label>Modelo<input bind:value={editAgentModel} maxlength="120" /></label><label>Proveedor<input bind:value={editAgentProvider} maxlength="80" /></label><label>Cliente<input bind:value={editAgentClient} maxlength="80" /></label><div><button class="primary" disabled={busy}>Guardar</button><button type="button" class="secondary" on:click={() => editingAgent = null}>Cancelar</button></div></form>{/if}{#each agents as a (a.id)}<div class="agent"><span class:online={a.active}></span><div><strong>{a.name}{a.credentialMode === 'mcp' ? ' · MCP' : ''}</strong><small>{a.model || a.clientType} · {a.active ? 'Activo' : 'Revocado'}</small></div>{#if a.lastSeenAt}<time>{date(a.lastSeenAt)}</time>{/if}<button class="agent-edit-button" on:click={() => beginAgentEdit(a)}>Editar</button>{#if a.active && a.name.toLowerCase() !== 'meido'}<button class="revoke-agent" on:click={() => void revokeRemoteAgent(a)}>Desactivar</button>{/if}</div>{/each}{#if !agents.length}<div class="empty">Aún no hay agentes. Crea una clave MCP para conectar el primero.</div>{/if}</section>
         {:else}<section class="work-panel graph-workspace"><div class="panel-head"><div><div class="eyebrow">MAPA DEL WORKSPACE</div><h2>Grafo 3D</h2></div><select aria-label="Proyecto visible en el mapa" bind:value={selectedProject}><option value="">Todos los proyectos</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p class="graph-hint">{selectedProject ? 'Vista del proyecto: tareas y conocimiento quedan agrupados alrededor de su proyecto.' : 'Vista general: muestra proyectos y sus relaciones. Elige un proyecto para explorar sus tareas y conocimiento.'} Arrastra para orbitar y usa la rueda para acercar.</p><div class="graph-canvas"><ThreeDGraph nodes={graphNodes} links={graphLinks} onSelect={(node) => selectedGraphNode = node} /></div>{#if selectedGraphNode}<aside class="graph-detail"><strong>{selectedGraphNode.label}</strong><span>{selectedGraphNode.kind === 'project' ? 'Proyecto' : selectedGraphNode.kind === 'task' ? 'Tarea' : selectedGraphNode.knowledgeKind}</span>{#if selectedGraphNode.summary}<p>{selectedGraphNode.summary}</p>{/if}{#if selectedGraphNode.source}<small>{selectedGraphNode.source}</small>{/if}</aside>{/if}</section>{/if}
     </section>

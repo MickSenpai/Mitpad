@@ -3,6 +3,7 @@ services:
     runtime: static
     name: mitpad-web
     domains:
+      - www.mitpad.com
       - mitpad.com
     rootDir: mitpad
     buildCommand: corepack pnpm install --frozen-lockfile && corepack pnpm run build
