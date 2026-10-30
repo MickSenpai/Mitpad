@@ -2,6 +2,7 @@
 import { createMcpExpressApp } from "@modelcontextprotocol/sdk/server/express.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createMitpadServer } from "./mitpad-mcp.mjs";
+import { fetchWithRetry } from "./fetch-with-retry.mjs";
 
 const renderHost = process.env.RENDER_EXTERNAL_HOSTNAME;
 const convexSiteUrl = process.env.MITPAD_CONVEX_SITE_URL?.replace(/\/+$/, "");
@@ -29,12 +30,24 @@ function cors(req, res) {
   return true;
 }
 
-app.get("/healthz", (_req, res) => res.status(200).json({ status: "ok", service: "mitpad-mcp" }));
+let shuttingDown = false;
+app.get("/healthz", async (_req, res) => {
+  if (shuttingDown) return res.status(503).json({ status: "shutting_down", service: "mitpad-mcp" });
+  try {
+    const dependency = await fetchWithRetry(`${convexSiteUrl}/api/healthz`, {}, { timeoutMs: 1_100, retries: 2 });
+    if (!dependency.ok) throw new Error(`Convex health returned ${dependency.status}`);
+    await dependency.body?.cancel().catch(() => {});
+    return res.status(200).json({ status: "ok", service: "mitpad-mcp", dependency: "ok" });
+  } catch {
+    return res.status(503).json({ status: "degraded", service: "mitpad-mcp", dependency: "unavailable" });
+  }
+});
 app.options("/mcp", (req, res) => {
   if (!cors(req, res)) return res.status(403).end();
   return res.status(204).end();
 });
 app.post("/mcp", async (req, res) => {
+  if (shuttingDown) return res.status(503).set("Retry-After", "5").json({ error: "El servidor se está reiniciando. Intenta de nuevo en unos segundos." });
   if (!cors(req, res)) return res.status(403).json({ error: "Origin no permitido." });
   const authorization = req.get("Authorization") ?? "";
   const match = /^Bearer\s+(\S+)$/i.exec(authorization);
@@ -45,10 +58,9 @@ app.post("/mcp", async (req, res) => {
 
   if (req.body?.method === "initialize") {
     try {
-      const check = await fetch(`${convexSiteUrl}/api/v1/agents/me`, {
+      const check = await fetchWithRetry(`${convexSiteUrl}/api/v1/agents/me`, {
         headers: { Authorization: `Bearer ${match[1]}` },
-        signal: AbortSignal.timeout(10_000),
-      });
+      }, { timeoutMs: 10_000, retries: 1 });
       if (check.status === 401) {
         res.setHeader("WWW-Authenticate", 'Bearer realm="Mitpad MCP"');
         return res.status(401).json({ error: "API key inválida o revocada." });
@@ -82,10 +94,21 @@ const port = Number(process.env.PORT ?? 3000);
 const httpServer = app.listen(port, "0.0.0.0", () => {
   console.error(`Mitpad MCP escuchando en el puerto ${port}; host permitido: ${renderHost ?? "configurado por entorno"}.`);
 });
+httpServer.requestTimeout = 30_000;
+httpServer.headersTimeout = 10_000;
+httpServer.keepAliveTimeout = 5_000;
 
-async function shutdown() {
-  httpServer.close();
-  process.exit(0);
+let shutdownStarted = false;
+function shutdown() {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  shuttingDown = true;
+  const forceClose = setTimeout(() => httpServer.closeAllConnections(), 25_000);
+  forceClose.unref();
+  httpServer.close((error) => {
+    clearTimeout(forceClose);
+    process.exitCode = error ? 1 : 0;
+  });
 }
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
