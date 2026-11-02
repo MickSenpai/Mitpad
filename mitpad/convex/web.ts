@@ -1,10 +1,11 @@
 import { ConvexError, v } from "convex/values";
-import { env, internalMutation, mutation, query } from "./_generated/server";
+import { env, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { hashAgentApiKey, userIdPersonal } from "./acceso";
 import { getAuthUserId } from "@convex-dev/auth/server";
 import { exigirWeb } from "./webAuth";
 import type { Doc, Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 
 const status = v.union(v.literal("backlog"), v.literal("todo"), v.literal("in_progress"), v.literal("review"), v.literal("done"), v.literal("blocked"));
 const relationType = v.union(v.literal("related_to"), v.literal("parent_of"), v.literal("depends_on"));
@@ -14,6 +15,7 @@ const knowledge = v.object({ id: v.id("projectKnowledge"), projectId: v.id("proj
 const task = v.object({ id: v.id("tasks"), projectId: v.id("projects"), title: v.string(), description: v.string(), status, priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent")), assigneeAgentId: v.union(v.id("agents"), v.null()), createdByType: v.union(v.literal("human"), v.literal("agent")), createdById: v.string(), updatedAt: v.number() });
 const note = v.object({ id: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), projectId: v.union(v.id("projects"), v.null()), updatedAt: v.number() });
 const image = v.object({ id: v.id("noteImages"), projectId: v.union(v.id("projects"), v.null()), noteId: v.union(v.string(), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), url: v.union(v.string(), v.null()), createdAt: v.number() });
+const workspaceFile = v.object({ id: v.id("workspaceFiles"), projectId: v.union(v.id("projects"), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), tags: v.array(v.string()), url: v.union(v.string(), v.null()), createdAt: v.number() });
 export const asegurarWorkspace = mutation({
   args: {},
   returns: v.object({ id: v.id("workspaces"), name: v.string() }),
@@ -124,10 +126,10 @@ export const migrarNotasLegadas = internalMutation({
 
 export const dashboard = query({
   args: {},
-  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string(), credentialMode: v.union(v.literal("local"), v.literal("mcp"), v.null()), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image) }),
+  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string(), credentialMode: v.union(v.literal("local"), v.literal("mcp"), v.null()), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image), files: v.array(workspaceFile) }),
   handler: async (ctx) => {
     const { workspace } = await exigirWeb(ctx);
-    const [projects, projectLinks, knowledge, tasks, agents, events, notes, images] = await Promise.all([
+    const [projects, projectLinks, knowledge, tasks, agents, events, notes, images, files] = await Promise.all([
       ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(300),
       ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("asc").take(1000),
       ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).take(1000),
@@ -136,6 +138,7 @@ export const dashboard = query({
       ctx.db.query("activityEvents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
       ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
       ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
+      ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
     ]);
     return {
       projects: projects.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })),
@@ -146,6 +149,7 @@ export const dashboard = query({
       events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
       notes: notes.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
       images: await Promise.all(images.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
+      files: await Promise.all(files.map(async (file) => ({ id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType, size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt }))),
     };
   },
 });
@@ -452,4 +456,158 @@ export const registrarImagen = mutation({
 export const borrarImagen = mutation({
   args: { imageId: v.id("noteImages") }, returns: v.boolean(),
   handler: async (ctx, { imageId }) => { const { workspace } = await exigirWeb(ctx); const imageDoc = await ctx.db.get(imageId); if (!imageDoc || imageDoc.workspaceId !== workspace._id) return false; await ctx.storage.delete(imageDoc.storageId); await ctx.db.delete(imageId); return true; },
+});
+
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const MAX_FILE_COUNT = 200;
+const MAX_FILE_TOTAL_BYTES = 1024 * 1024 * 1024;
+const ALLOWED_FILE_TYPES = new Set([
+  "application/pdf", "text/plain", "text/markdown", "text/csv", "application/json",
+  "application/rtf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "application/vnd.oasis.opendocument.text", "application/vnd.oasis.opendocument.spreadsheet",
+  "application/vnd.oasis.opendocument.presentation", "application/zip",
+]);
+
+export const crearUrlSubidaArchivo = mutation({
+  args: { projectId: v.union(v.id("projects"), v.null()) }, returns: v.string(),
+  handler: async (ctx, { projectId }) => {
+    const { workspace } = await exigirWeb(ctx);
+    if (projectId) {
+      const projectDoc = await ctx.db.get(projectId);
+      if (!projectDoc || projectDoc.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
+    }
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+export const registrarArchivo = mutation({
+  args: { projectId: v.union(v.id("projects"), v.null()), storageId: v.id("_storage"), filename: v.string() },
+  returns: v.id("workspaceFiles"),
+  handler: async (ctx, args) => {
+    const { workspace } = await exigirWeb(ctx);
+    if (args.projectId) {
+      const projectDoc = await ctx.db.get(args.projectId);
+      if (!projectDoc || projectDoc.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
+    }
+    const filename = args.filename.trim();
+    if (!filename || filename.length > 255) throw new ConvexError("El nombre del archivo no es válido.");
+    const meta = await ctx.db.system.get("_storage", args.storageId);
+    if (!meta || !ALLOWED_FILE_TYPES.has(meta.contentType ?? "") || meta.size < 1 || meta.size > MAX_FILE_BYTES) {
+      throw new ConvexError("Formato no admitido o archivo mayor de 25 MB. Se aceptan PDF, texto, hojas de cálculo, documentos y presentaciones.");
+    }
+    const existing = await ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).take(MAX_FILE_COUNT + 1);
+    if (existing.length >= MAX_FILE_COUNT || existing.reduce((sum, file) => sum + file.size, 0) + meta.size > MAX_FILE_TOTAL_BYTES) {
+      throw new ConvexError("El espacio alcanzó su límite de 200 archivos o 1 GB.");
+    }
+    return await ctx.db.insert("workspaceFiles", { workspaceId: workspace._id, projectId: args.projectId ?? undefined, storageId: args.storageId, filename, contentType: meta.contentType!, size: meta.size, createdAt: Date.now() });
+  },
+});
+
+export const borrarArchivo = mutation({
+  args: { fileId: v.id("workspaceFiles") }, returns: v.boolean(),
+  handler: async (ctx, { fileId }) => {
+    const { workspace } = await exigirWeb(ctx);
+    const file = await ctx.db.get(fileId);
+    if (!file || file.workspaceId !== workspace._id) return false;
+    await ctx.storage.delete(file.storageId);
+    await ctx.db.delete(fileId);
+    return true;
+  },
+});
+
+export const actualizarEtiquetasArchivo = mutation({
+  args: { fileId: v.id("workspaceFiles"), tags: v.array(v.string()) }, returns: v.null(),
+  handler: async (ctx, { fileId, tags }) => {
+    const { workspace } = await exigirWeb(ctx);
+    const file = await ctx.db.get(fileId);
+    if (!file || file.workspaceId !== workspace._id) throw new ConvexError("El archivo no pertenece al workspace.");
+    const normalized = [...new Set(tags.map(tag => tag.trim().toLowerCase()).filter(Boolean))];
+    if (normalized.length > 10 || normalized.some(tag => tag.length > 32)) throw new ConvexError("Usa hasta 10 etiquetas de 32 caracteres cada una.");
+    await ctx.db.patch(fileId, { tags: normalized });
+    return null;
+  },
+});
+
+async function validarAgenteDeArchivo(ctx: QueryCtx | MutationCtx, workspaceId: Id<"workspaces">, agentId: Id<"agents">) {
+  const agent = await ctx.db.get(agentId);
+  if (!agent || !agent.active || agent.workspaceId !== workspaceId) throw new ConvexError("El agente no pertenece al workspace o está desactivado.");
+  return agent;
+}
+
+export const crearUrlSubidaArchivoAgente = internalMutation({
+  args: { workspaceId: v.id("workspaces"), agentId: v.id("agents"), projectId: v.id("projects") },
+  returns: v.string(),
+  handler: async (ctx, { workspaceId, agentId, projectId }) => {
+    await validarAgenteDeArchivo(ctx, workspaceId, agentId);
+    const projectDoc = await ctx.db.get(projectId);
+    if (!projectDoc || projectDoc.workspaceId !== workspaceId) throw new ConvexError("El proyecto no pertenece al workspace del agente.");
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+export const registrarArchivoAgente = internalMutation({
+  args: {
+    workspaceId: v.id("workspaces"), agentId: v.id("agents"), projectId: v.id("projects"),
+    storageId: v.id("_storage"), filename: v.string(), tags: v.optional(v.array(v.string())),
+  },
+  returns: v.object({ id: v.id("workspaceFiles"), filename: v.string(), projectId: v.id("projects"), size: v.number(), contentType: v.string() }),
+  handler: async (ctx, args) => {
+    await validarAgenteDeArchivo(ctx, args.workspaceId, args.agentId);
+    const projectDoc = await ctx.db.get(args.projectId);
+    if (!projectDoc || projectDoc.workspaceId !== args.workspaceId) throw new ConvexError("El proyecto no pertenece al workspace del agente.");
+    const filename = args.filename.trim();
+    if (!filename || filename.length > 255) throw new ConvexError("El nombre del archivo no es válido.");
+    const meta = await ctx.db.system.get("_storage", args.storageId);
+    if (!meta || !ALLOWED_FILE_TYPES.has(meta.contentType ?? "") || meta.size < 1 || meta.size > MAX_FILE_BYTES) {
+      throw new ConvexError("Formato no admitido o archivo mayor de 25 MB.");
+    }
+    const existing = await ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", args.workspaceId)).take(MAX_FILE_COUNT + 1);
+    if (existing.length >= MAX_FILE_COUNT || existing.reduce((sum, file) => sum + file.size, 0) + meta.size > MAX_FILE_TOTAL_BYTES) {
+      throw new ConvexError("El workspace alcanzó su límite de 200 archivos o 1 GB.");
+    }
+    const tags = [...new Set((args.tags ?? []).map(tag => tag.trim().toLowerCase()).filter(Boolean))];
+    if (tags.length > 10 || tags.some(tag => tag.length > 32)) throw new ConvexError("Usa hasta 10 etiquetas de 32 caracteres cada una.");
+    const id = await ctx.db.insert("workspaceFiles", {
+      workspaceId: args.workspaceId, projectId: args.projectId, storageId: args.storageId,
+      filename, contentType: meta.contentType!, size: meta.size, tags, uploadedByAgentId: args.agentId, createdAt: Date.now(),
+    });
+    return { id, filename, projectId: args.projectId, size: meta.size, contentType: meta.contentType! };
+  },
+});
+
+export const listarArchivosAgente = internalQuery({
+  args: { workspaceId: v.id("workspaces"), agentId: v.id("agents"), projectId: v.optional(v.id("projects")) },
+  returns: v.array(workspaceFile),
+  handler: async (ctx, args) => {
+    await validarAgenteDeArchivo(ctx, args.workspaceId, args.agentId);
+    if (args.projectId) {
+      const projectDoc = await ctx.db.get(args.projectId);
+      if (!projectDoc || projectDoc.workspaceId !== args.workspaceId) throw new ConvexError("El proyecto no pertenece al workspace del agente.");
+    }
+    const rows = args.projectId
+      ? await ctx.db.query("workspaceFiles").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", args.projectId!)).order("desc").take(200)
+      : await ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", args.workspaceId)).order("desc").take(200);
+    return await Promise.all(rows.filter(row => row.workspaceId === args.workspaceId).map(async file => ({
+      id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType,
+      size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt,
+    })));
+  },
+});
+
+export const vincularArchivoAgente = internalMutation({
+  args: { workspaceId: v.id("workspaces"), agentId: v.id("agents"), fileId: v.id("workspaceFiles"), projectId: v.union(v.id("projects"), v.null()) },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    await validarAgenteDeArchivo(ctx, args.workspaceId, args.agentId);
+    const file = await ctx.db.get(args.fileId);
+    if (!file || file.workspaceId !== args.workspaceId) throw new ConvexError("El archivo no pertenece al workspace del agente.");
+    if (args.projectId) {
+      const projectDoc = await ctx.db.get(args.projectId);
+      if (!projectDoc || projectDoc.workspaceId !== args.workspaceId) throw new ConvexError("El proyecto no pertenece al workspace del agente.");
+    }
+    await ctx.db.patch(file._id, { projectId: args.projectId ?? undefined });
+    return true;
+  },
 });

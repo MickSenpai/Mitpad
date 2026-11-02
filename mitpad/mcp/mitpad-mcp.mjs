@@ -1,11 +1,22 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { basename, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { realpath, readFile, stat } from "node:fs/promises";
 import { fetchWithRetry } from "./fetch-with-retry.mjs";
 
 const keyPattern = /^pha_[a-f0-9]{64}$/i;
 
-export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_SITE_URL) {
+const FILE_TYPES_BY_EXTENSION = new Map([
+  [".pdf", "application/pdf"], [".txt", "text/plain"], [".md", "text/markdown"], [".markdown", "text/markdown"],
+  [".csv", "text/csv"], [".json", "application/json"], [".rtf", "application/rtf"], [".doc", "application/msword"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"], [".xls", "application/vnd.ms-excel"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"], [".ppt", "application/vnd.ms-powerpoint"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"], [".odt", "application/vnd.oasis.opendocument.text"],
+  [".ods", "application/vnd.oasis.opendocument.spreadsheet"], [".odp", "application/vnd.oasis.opendocument.presentation"], [".zip", "application/zip"],
+]);
+
+export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_SITE_URL, { localFileAccess = false } = {}) {
   if (!rawBase) throw new Error("Configura MITPAD_CONVEX_SITE_URL.");
   const base = rawBase.replace(/\/+$/, "");
   if (!/^https:\/\//i.test(base) && !/^http:\/\/localhost(?::\d+)?$/i.test(base)) {
@@ -26,6 +37,20 @@ export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_S
     return data;
   }
 
+  async function uploadBuffer(projectId, filename, contentType, bytes, tags = []) {
+    if (bytes.byteLength < 1 || bytes.byteLength > 25 * 1024 * 1024) throw new Error("El archivo debe pesar entre 1 byte y 25 MB.");
+    if (![...FILE_TYPES_BY_EXTENSION.values()].includes(contentType)) throw new Error("Formato de archivo no admitido.");
+    const preparation = await request("files/upload-url", "POST", { project_id: projectId });
+    const uploaded = await fetchWithRetry(preparation.upload_url, {
+      method: "POST", headers: { "Content-Type": contentType }, body: bytes,
+    }, { timeoutMs: 120_000, retries: 0 });
+    if (!uploaded.ok) throw new Error(`La carga binaria falló (${uploaded.status}).`);
+    const { storageId } = await uploaded.json();
+    return await request("files/register", "POST", {
+      project_id: projectId, filename, storage_id: storageId, tags,
+    });
+  }
+
   function result(value) {
     return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
   }
@@ -42,8 +67,8 @@ export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_S
     });
   }
 
-  const server = new McpServer({ name: "mitpad", version: "0.3.0" }, {
-    instructions: "Mitpad is a private project workspace. Start with read-only list tools to learn the workspace. Keep actions within the selected project, use the user's language, and summarize what you changed. Only create, edit, or delete data when the user asks. Project and note deletion are permanent. If a tool fails, report the error instead of claiming success.",
+  const server = new McpServer({ name: "mitpad", version: "0.4.0" }, {
+    instructions: "Mitpad is a private project workspace. Start with read-only list tools to learn the workspace. When uploading a file, find the exact project with mitpad_projects_list and pass its ID; upload tools register the file directly under that project. You may relink an existing workspace file with mitpad_files_link. In local stdio mode, mitpad_files_upload_local reads only files inside MITPAD_UPLOAD_ROOT (or the process working directory when unset). Use the user's language and summarize what changed. Only create, edit, upload, link, or delete data when the user asks. Project and note deletion are permanent. If a tool fails, report the error instead of claiming success.",
   });
   const id = z.string().min(1).max(100);
   const taskStatus = z.enum(["backlog", "todo", "in_progress", "review", "done", "blocked"]);
@@ -71,6 +96,40 @@ export function createMitpadServer(apiKey, rawBase = process.env.MITPAD_CONVEX_S
   tool(server, "mitpad_notes_create", "Guarda una nota para el piloto y los agentes.", { title: z.string().max(300).optional(), content: z.string().min(1).max(500_000), project_id: id.optional() }, (a) => request("notes", "POST", a));
   tool(server, "mitpad_notes_update", "Edita o marca como atendida una nota existente.", { note_id: id, title: z.string().max(300).optional(), content: z.string().max(500_000).optional(), status: z.enum(["open", "attended"]).optional(), project_id: id.nullable().optional() }, ({ note_id, ...body }) => request(`notes/${encodeURIComponent(note_id)}`, "PATCH", body));
   tool(server, "mitpad_notes_delete", "Elimina permanentemente una nota y sus adjuntos. Úsala solo cuando el usuario solicite borrar esa nota.", { note_id: id }, ({ note_id }) => request(`notes/${encodeURIComponent(note_id)}`, "DELETE"));
+
+  tool(server, "mitpad_files_list", "Lista archivos del workspace o de un proyecto, con nombre, etiquetas, tamaño y enlace de descarga.", { project_id: id.optional() }, ({ project_id }) => {
+    const query = project_id ? `?project_id=${encodeURIComponent(project_id)}` : "";
+    return request(`files${query}`);
+  });
+  tool(server, "mitpad_files_link", "Vincula un archivo existente a un proyecto del workspace o lo deja sin proyecto.", { file_id: id, project_id: id.nullable() }, ({ file_id, project_id }) => request(`files/${encodeURIComponent(file_id)}`, "PATCH", { project_id }));
+  tool(server, "mitpad_files_upload_text", "Crea un archivo Markdown, texto, CSV o JSON con el contenido proporcionado y lo vincula al proyecto elegido. Para preservar archivos locales binarios, configura MCP por stdio y usa mitpad_files_upload_local.", {
+    project_id: id, filename: z.string().min(1).max(255), content: z.string().min(1).max(20_000),
+    format: z.enum(["markdown", "text", "csv", "json"]).default("markdown"),
+    tags: z.array(z.string().max(32)).max(10).optional(),
+  }, async ({ project_id, filename, content, format, tags }) => {
+    const typeByFormat = { markdown: "text/markdown", text: "text/plain", csv: "text/csv", json: "application/json" };
+    return await uploadBuffer(project_id, filename, typeByFormat[format], Buffer.from(content, "utf8"), tags ?? []);
+  });
+
+  if (localFileAccess) {
+    tool(server, "mitpad_files_upload_local", "Sube el archivo original desde el equipo local y lo enlaza al proyecto. Solo lee rutas dentro de MITPAD_UPLOAD_ROOT (por defecto, la carpeta desde la que se inició el cliente MCP). Úsalo solo cuando el usuario pida cargar ese archivo.", {
+      project_id: id, path: z.string().min(1).max(2000), filename: z.string().min(1).max(255).optional(),
+      tags: z.array(z.string().max(32)).max(10).optional(),
+    }, async ({ project_id, path, filename, tags }) => {
+      const root = await realpath(resolve(process.env.MITPAD_UPLOAD_ROOT ?? process.cwd()));
+      const absolute = await realpath(isAbsolute(path) ? path : resolve(root, path));
+      const relativePath = relative(root, absolute);
+      if (relativePath === ".." || relativePath.startsWith(`..${sep}`) || isAbsolute(relativePath)) throw new Error("La ruta está fuera de MITPAD_UPLOAD_ROOT.");
+      const metadata = await stat(absolute);
+      if (!metadata.isFile()) throw new Error("La ruta no apunta a un archivo regular.");
+      if (metadata.size < 1 || metadata.size > 25 * 1024 * 1024) throw new Error("El archivo debe pesar entre 1 byte y 25 MB.");
+      const name = filename?.trim() || basename(absolute);
+      const contentType = FILE_TYPES_BY_EXTENSION.get(extname(name).toLowerCase());
+      if (!contentType) throw new Error("Formato no admitido. Usa PDF, texto/Markdown, CSV/JSON, Office, OpenDocument o ZIP.");
+      const bytes = await readFile(absolute);
+      return await uploadBuffer(project_id, name, contentType, bytes, tags ?? []);
+    });
+  }
 
   tool(server, "mitpad_task_comments_list", "Lee la conversación asociada a una tarea.", { task_id: id }, ({ task_id }) => request(`tasks/${encodeURIComponent(task_id)}/comments`));
   tool(server, "mitpad_task_comment_add", "Agrega un mensaje, instrucción, pregunta, respuesta, decisión o actualización a una tarea.", { task_id: id, type: z.enum(["message", "instruction", "question", "answer", "decision", "update"]), content: z.string().min(1).max(20_000) }, ({ task_id, ...body }) => request(`tasks/${encodeURIComponent(task_id)}/comments`, "POST", body));

@@ -1,4 +1,4 @@
-import React, { Component, useEffect, useRef, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, useRef, useState, type ErrorInfo, type FormEvent, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { ConvexAuthProvider, useAuthActions, useConvexAuth } from "@convex-dev/auth/react";
 import { ConvexReactClient } from "convex/react";
@@ -15,8 +15,7 @@ type AuthCallback = (session: AuthSession) => void | Promise<void>;
 
 function safeAuthMessage(reason: unknown): string {
   const detail = reason instanceof Error ? reason.message : String(reason);
-  if (detail.includes("InvalidAccountId")) return "No encontramos una cuenta de acceso con ese correo. Revisa la dirección o crea una cuenta para continuar.";
-  if (detail.includes("InvalidSecret")) return "El correo o la contraseña no coinciden. Revísalos e inténtalo de nuevo.";
+  if (detail.includes("InvalidAccountId") || detail.includes("InvalidSecret")) return "El correo o la contraseña no coinciden. Revísalos e inténtalo de nuevo.";
   if (detail.includes("TooManyFailedAttempts")) return "Hubo varios intentos fallidos. Espera un momento antes de volver a intentarlo.";
   if (detail.includes("Ingresa un correo válido.")) return "Ingresa un correo electrónico válido.";
   if (detail.includes("La contraseña debe tener al menos 10 caracteres.")) return "La contraseña debe tener al menos 10 caracteres.";
@@ -50,7 +49,7 @@ function PasswordForm({ onSession }: { onSession: AuthCallback }) {
     return () => { active = false; };
   }, [isAuthenticated, profile, fetchAccessToken, signOut]);
 
-  async function submit(event: React.FormEvent<HTMLFormElement>) {
+  async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setWorking(true); setError("");
     const formData = new FormData(event.currentTarget);
     formData.set("flow", mode);

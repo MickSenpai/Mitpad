@@ -1,4 +1,5 @@
 import { httpRouter } from "convex/server";
+import { ConvexError } from "convex/values";
 import { httpAction } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { api, internal } from "./_generated/api";
@@ -32,20 +33,20 @@ async function readBody(request: Request): Promise<Record<string, unknown> | nul
 function str(body: Record<string, unknown>, key: string, max: number, required = false): string | undefined {
   const value = body[key];
   if (value === undefined && !required) return undefined;
-  if (typeof value !== "string" || (required && !value.trim()) || value.length > max) throw new Error(`${key} inválido.`);
+  if (typeof value !== "string" || (required && !value.trim()) || value.length > max) throw new ConvexError(`${key} inválido.`);
   return value;
 }
 
 function optionalNumber(body: Record<string, unknown>, key: string): number | undefined {
   const value = body[key];
   if (value === undefined || value === null) return undefined;
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${key} debe ser numérico.`);
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new ConvexError(`${key} debe ser numérico.`);
   return value;
 }
 
 function enumValue<T extends string>(value: string | undefined, allowed: readonly T[], field: string): T | undefined {
   if (value === undefined) return undefined;
-  if (!allowed.includes(value as T)) throw new Error(`${field} tiene un valor no válido.`);
+  if (!allowed.includes(value as T)) throw new ConvexError(`${field} tiene un valor no válido.`);
   return value as T;
 }
 
@@ -78,7 +79,11 @@ const handler = httpAction(async (ctx, request) => {
       const pilot = str(body, "pilot", 120, true)!;
       const result = await ctx.runMutation(api.agents.registrar, { token: pilotToken, name, model, modelProvider, clientType, pilot });
       return json({ agent: result.agent, api_key: result.apiKey, agent_instructions: result.instructions }, 201);
-    } catch (error) { return fail(error instanceof Error ? error.message : "No se pudo registrar el agente.", 400); }
+    } catch (error) {
+      if (error instanceof ConvexError) return fail(String(error.data), 400);
+      console.error("Error interno al registrar un agente de Mitpad.");
+      return fail("No se pudo registrar el agente.", 500);
+    }
   }
 
   const agent = await getAgent(ctx, request);
@@ -169,6 +174,44 @@ const handler = httpAction(async (ctx, request) => {
         ...(projectRaw === undefined ? {} : { projectId: projectRaw as Id<"projects"> | null }),
       }));
     }
+    if (request.method === "GET" && path === "/api/v1/files") {
+      const projectRaw = url.searchParams.get("project_id") ?? undefined;
+      return json(await ctx.runQuery(internal.web.listarArchivosAgente, {
+        workspaceId: agent.workspaceId, agentId: agent.id,
+        ...(projectRaw ? { projectId: projectRaw as Id<"projects"> } : {}),
+      }));
+    }
+    if (request.method === "POST" && path === "/api/v1/files/upload-url") {
+      const body = await readBody(request); if (!body) return fail("JSON inválido.", 400);
+      const projectId = str(body, "project_id", 100, true)! as Id<"projects">;
+      return json({ upload_url: await ctx.runMutation(internal.web.crearUrlSubidaArchivoAgente, {
+        workspaceId: agent.workspaceId, agentId: agent.id, projectId,
+      }) });
+    }
+    if (request.method === "POST" && path === "/api/v1/files/register") {
+      const body = await readBody(request); if (!body) return fail("JSON inválido.", 400);
+      const projectId = str(body, "project_id", 100, true)! as Id<"projects">;
+      const filename = str(body, "filename", 255, true)!;
+      const storageId = str(body, "storage_id", 100, true)! as Id<"_storage">;
+      const tagsRaw = body.tags;
+      if (tagsRaw !== undefined && (!Array.isArray(tagsRaw) || tagsRaw.length > 10 || tagsRaw.some(tag => typeof tag !== "string" || tag.length > 32))) return fail("tags debe ser una lista de hasta 10 etiquetas de 32 caracteres.", 400);
+      return json(await ctx.runMutation(internal.web.registrarArchivoAgente, {
+        workspaceId: agent.workspaceId, agentId: agent.id, projectId, filename, storageId,
+        ...(Array.isArray(tagsRaw) ? { tags: tagsRaw as string[] } : {}),
+      }), 201);
+    }
+    const fileMatch = path.match(/^\/api\/v1\/files\/([^/]+)$/);
+    if (fileMatch && request.method === "PATCH") {
+      const body = await readBody(request); if (!body) return fail("JSON inválido.", 400);
+      const projectRaw = body.project_id;
+      if (projectRaw !== null && (typeof projectRaw !== "string" || projectRaw.length > 100)) return fail("project_id debe ser un ID de proyecto o null.", 400);
+      const linked = await ctx.runMutation(internal.web.vincularArchivoAgente, {
+        workspaceId: agent.workspaceId, agentId: agent.id,
+        fileId: decodeURIComponent(fileMatch[1]) as Id<"workspaceFiles">,
+        projectId: projectRaw as Id<"projects"> | null,
+      });
+      return json({ linked });
+    }
     if (request.method === "GET" && path === "/api/v1/tasks") {
       const projectRaw = url.searchParams.get("project_id") ?? undefined;
       const statusRaw = url.searchParams.get("status") ?? undefined;
@@ -238,7 +281,9 @@ const handler = httpAction(async (ctx, request) => {
     }
     return fail("Ruta no encontrada.", 404);
   } catch (error) {
-    return fail(error instanceof Error ? error.message : "Solicitud inválida.", 400);
+    if (error instanceof ConvexError) return fail(String(error.data), 400);
+    console.error("Error interno al procesar una solicitud de Mitpad.");
+    return fail("No se pudo completar la solicitud.", 500);
   }
 });
 

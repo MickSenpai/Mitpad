@@ -1,4 +1,4 @@
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -64,13 +64,13 @@ async function personalWorkspace(ctx: QueryCtx | MutationCtx) {
 
 async function ensureAgent(ctx: QueryCtx | MutationCtx, workspaceId: Id<"workspaces">, agentId: Id<"agents">) {
   const agent = await ctx.db.get(agentId);
-  if (!agent || !agent.active || agent.workspaceId !== workspaceId) throw new Error("El agente no pertenece a este espacio o está desactivado.");
+  if (!agent || !agent.active || agent.workspaceId !== workspaceId) throw new ConvexError("El agente no pertenece a este espacio o está desactivado.");
   return agent;
 }
 
 async function ensureProject(ctx: QueryCtx | MutationCtx, workspaceId: Id<"workspaces">, projectId: Id<"projects">) {
   const project = await ctx.db.get(projectId);
-  if (!project || project.workspaceId !== workspaceId) throw new Error("El proyecto no pertenece a este espacio.");
+  if (!project || project.workspaceId !== workspaceId) throw new ConvexError("El proyecto no pertenece a este espacio.");
   return project;
 }
 
@@ -88,7 +88,7 @@ async function addEvent(ctx: MutationCtx, args: {
 
 async function createProject(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor: Actor, name: string, description: string) {
   validarTexto(name, "Nombre", 120);
-  if (description.length > 20_000) throw new Error("La descripción del proyecto supera 20.000 caracteres.");
+  if (description.length > 20_000) throw new ConvexError("La descripción del proyecto supera 20.000 caracteres.");
   const now = Date.now();
   const id = await ctx.db.insert("projects", {
     workspaceId, name: name.trim(), description: description.trim(), status: "active",
@@ -96,7 +96,7 @@ async function createProject(ctx: MutationCtx, workspaceId: Id<"workspaces">, ac
   });
   await addEvent(ctx, { workspaceId, projectId: id, actor, eventType: "project_created", entityType: "project", entityId: id, summary: `Creó el proyecto ${name.trim()}` });
   const project = await ctx.db.get(id);
-  if (!project) throw new Error("No se pudo crear el proyecto.");
+  if (!project) throw new ConvexError("No se pudo crear el proyecto.");
   return publicProject(project);
 }
 
@@ -104,19 +104,19 @@ async function updateProject(ctx: MutationCtx, workspaceId: Id<"workspaces">, ag
   const agent = await ensureAgent(ctx, workspaceId, agentId);
   const current = await ensureProject(ctx, workspaceId, projectId);
   if (patch.name !== undefined) validarTexto(patch.name, "Nombre", 120);
-  if (patch.description !== undefined && patch.description.length > 20_000) throw new Error("La descripción supera 20.000 caracteres.");
+  if (patch.description !== undefined && patch.description.length > 20_000) throw new ConvexError("La descripción supera 20.000 caracteres.");
   const changes: { name?: string; description?: string; updatedAt: number } = { updatedAt: Date.now() };
   if (patch.name !== undefined) changes.name = patch.name.trim();
   if (patch.description !== undefined) changes.description = patch.description.trim();
   await ctx.db.patch(projectId, changes);
   await addEvent(ctx, { workspaceId, projectId, actor: { kind: "agent", id: agent._id }, eventType: "project_updated", entityType: "project", entityId: projectId, summary: `Actualizó el proyecto ${patch.name?.trim() ?? current.name}` });
   const updated = await ctx.db.get(projectId);
-  if (!updated) throw new Error("No se pudo recuperar el proyecto actualizado.");
+  if (!updated) throw new ConvexError("No se pudo recuperar el proyecto actualizado.");
   return publicProject(updated);
 }
 
 function validarTexto(value: string, name: string, max: number) {
-  if (!value.trim() || value.length > max) throw new Error(`${name} es obligatorio y debe tener máximo ${max} caracteres.`);
+  if (!value.trim() || value.length > max) throw new ConvexError(`${name} es obligatorio y debe tener máximo ${max} caracteres.`);
 }
 
 async function listProjects(ctx: QueryCtx, workspaceId: Id<"workspaces">) {
@@ -144,11 +144,11 @@ async function createTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
 }) {
   await ensureProject(ctx, workspaceId, args.projectId);
   validarTexto(args.title, "Título", 200);
-  if (args.description.length > 50_000) throw new Error("La descripción de la tarea supera 50.000 caracteres.");
+  if (args.description.length > 50_000) throw new ConvexError("La descripción de la tarea supera 50.000 caracteres.");
   if (args.assigneeAgentId) await ensureAgent(ctx, workspaceId, args.assigneeAgentId);
   if (args.parentTaskId) {
     const parent = await ctx.db.get(args.parentTaskId);
-    if (!parent || parent.projectId !== args.projectId) throw new Error("La tarea padre debe estar en el mismo proyecto.");
+    if (!parent || parent.projectId !== args.projectId) throw new ConvexError("La tarea padre debe estar en el mismo proyecto.");
   }
   const now = Date.now();
   const id = await ctx.db.insert("tasks", {
@@ -159,7 +159,7 @@ async function createTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
   });
   await addEvent(ctx, { workspaceId, projectId: args.projectId, actor, eventType: "task_created", entityType: "task", entityId: id, summary: `Creó la tarea ${args.title.trim()}` });
   const task = await ctx.db.get(id);
-  if (!task) throw new Error("No se pudo crear la tarea.");
+  if (!task) throw new ConvexError("No se pudo crear la tarea.");
   return publicTask(task);
 }
 
@@ -168,10 +168,10 @@ async function updateTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
   dueAt?: number; assigneeAgentId?: Id<"agents">; projectId?: Id<"projects">;
 }) {
   const current = await ctx.db.get(taskId);
-  if (!current || current.workspaceId !== workspaceId) throw new Error("La tarea no pertenece a este espacio.");
+  if (!current || current.workspaceId !== workspaceId) throw new ConvexError("La tarea no pertenece a este espacio.");
   if (patch.projectId) await ensureProject(ctx, workspaceId, patch.projectId);
   if (patch.title !== undefined) validarTexto(patch.title, "Título", 200);
-  if (patch.description !== undefined && patch.description.length > 50_000) throw new Error("La descripción de la tarea supera 50.000 caracteres.");
+  if (patch.description !== undefined && patch.description.length > 50_000) throw new ConvexError("La descripción de la tarea supera 50.000 caracteres.");
   if (patch.assigneeAgentId) await ensureAgent(ctx, workspaceId, patch.assigneeAgentId);
   const changes: Record<string, string | number | Id<"agents"> | Id<"projects"> | undefined> = {};
   if (patch.title !== undefined) changes.title = patch.title.trim();
@@ -181,11 +181,11 @@ async function updateTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
   if (patch.dueAt !== undefined) changes.dueAt = patch.dueAt;
   if (patch.assigneeAgentId !== undefined) changes.assigneeAgentId = patch.assigneeAgentId;
   if (patch.projectId !== undefined) changes.projectId = patch.projectId;
-  if (Object.keys(changes).length === 0) throw new Error("No hay cambios para guardar.");
+  if (Object.keys(changes).length === 0) throw new ConvexError("No hay cambios para guardar.");
   changes.updatedAt = Date.now();
   await ctx.db.patch(taskId, changes);
   const updated = await ctx.db.get(taskId);
-  if (!updated) throw new Error("No se pudo recuperar la tarea actualizada.");
+  if (!updated) throw new ConvexError("No se pudo recuperar la tarea actualizada.");
   const details = JSON.stringify({ from: { status: current.status, projectId: current.projectId }, to: { status: updated.status, projectId: updated.projectId } });
   await addEvent(ctx, { workspaceId, projectId: updated.projectId, actor, eventType: "task_updated", entityType: "task", entityId: taskId, summary: `Actualizó la tarea ${updated.title}`, details });
   return publicTask(updated);
@@ -193,7 +193,7 @@ async function updateTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
 
 async function addComment(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor: Actor, taskId: Id<"tasks">, kind: Doc<"taskComments">["kind"], content: string) {
   const task = await ctx.db.get(taskId);
-  if (!task || task.workspaceId !== workspaceId) throw new Error("La tarea no pertenece a este espacio.");
+  if (!task || task.workspaceId !== workspaceId) throw new ConvexError("La tarea no pertenece a este espacio.");
   validarTexto(content, "Comentario", 20_000);
   const now = Date.now();
   const id = await ctx.db.insert("taskComments", {
@@ -202,7 +202,7 @@ async function addComment(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
   });
   await addEvent(ctx, { workspaceId, projectId: task.projectId, actor, eventType: "comment_created", entityType: "comment", entityId: id, summary: `Comentó en ${task.title}`, details: content.trim().slice(0, 20_000) });
   const comment = await ctx.db.get(id);
-  if (!comment) throw new Error("No se pudo crear el comentario.");
+  if (!comment) throw new ConvexError("No se pudo crear el comentario.");
   return publicComment(comment);
 }
 
@@ -241,7 +241,7 @@ export const crearTarea = mutation({
   }, returns: taskValidator,
   handler: async (ctx, args) => {
     exigirToken(args.token); const w = await personalWorkspace(ctx);
-    if (!w) throw new Error("Crea primero el espacio personal.");
+    if (!w) throw new ConvexError("Crea primero el espacio personal.");
     return createTask(ctx, w._id, { kind: "human", id: "pilot" }, {
       projectId: args.projectId, title: args.title, description: args.description ?? "", priority: args.priority ?? "medium",
       dueAt: args.dueAt, assigneeAgentId: args.assigneeAgentId, parentTaskId: args.parentTaskId,
@@ -257,7 +257,7 @@ export const actualizarTarea = mutation({
   }, returns: taskValidator,
   handler: async (ctx, args) => {
     exigirToken(args.token); const w = await personalWorkspace(ctx);
-    if (!w) throw new Error("No existe el espacio personal.");
+    if (!w) throw new ConvexError("No existe el espacio personal.");
     const { token: _token, taskId, ...patch } = args;
     return updateTask(ctx, w._id, { kind: "human", id: "pilot" }, taskId, patch);
   },
@@ -267,7 +267,7 @@ export const comentarios = query({
   args: { token: v.string(), taskId: v.id("tasks") }, returns: v.array(commentValidator),
   handler: async (ctx, { token, taskId }) => {
     exigirToken(token); const w = await personalWorkspace(ctx); if (!w) return [];
-    const task = await ctx.db.get(taskId); if (!task || task.workspaceId !== w._id) throw new Error("La tarea no pertenece a este espacio.");
+    const task = await ctx.db.get(taskId); if (!task || task.workspaceId !== w._id) throw new ConvexError("La tarea no pertenece a este espacio.");
     const docs = await ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", (q) => q.eq("taskId", taskId)).order("asc").take(500);
     return docs.map(publicComment);
   },
@@ -276,7 +276,7 @@ export const comentarios = query({
 export const agregarComentario = mutation({
   args: { token: v.string(), taskId: v.id("tasks"), kind: commentKind, content: v.string() }, returns: commentValidator,
   handler: async (ctx, { token, taskId, kind, content }) => {
-    exigirToken(token); const w = await personalWorkspace(ctx); if (!w) throw new Error("No existe el espacio personal.");
+    exigirToken(token); const w = await personalWorkspace(ctx); if (!w) throw new ConvexError("No existe el espacio personal.");
     return addComment(ctx, w._id, { kind: "human", id: "pilot" }, taskId, kind, content);
   },
 });
@@ -386,6 +386,10 @@ export const continuarBorradoProyecto = internalMutation({
       const rows = await ctx.db.query("noteImages").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId)).take(pageSize);
       for (const row of rows) await ctx.db.patch(row._id, { projectId: undefined });
       hasMore = rows.length === pageSize;
+    } else if (job.phase === "files") {
+      const rows = await ctx.db.query("workspaceFiles").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId)).take(pageSize);
+      for (const row of rows) await ctx.db.patch(row._id, { projectId: undefined });
+      hasMore = rows.length === pageSize;
     } else if (job.phase === "comments") {
       const rows = await ctx.db.query("taskComments").withIndex("by_projectId_and_createdAt", q => q.eq("projectId", projectId)).take(pageSize);
       for (const row of rows) await ctx.db.delete(row._id);
@@ -412,7 +416,7 @@ export const continuarBorradoProyecto = internalMutation({
       hasMore = rows.length === pageSize;
     }
 
-    const phases: Doc<"projectDeletionJobs">["phase"][] = ["notes", "images", "comments", "tasks", "knowledge", "sourceLinks", "targetLinks", "events", "finish"];
+    const phases: Doc<"projectDeletionJobs">["phase"][] = ["notes", "images", "files", "comments", "tasks", "knowledge", "sourceLinks", "targetLinks", "events", "finish"];
     const nextPhase = hasMore ? job.phase : phases[phases.indexOf(job.phase) + 1];
     await ctx.db.patch(job._id, { phase: nextPhase });
     await ctx.scheduler.runAfter(0, internal.workbench.continuarBorradoProyecto, { projectId });
@@ -449,13 +453,13 @@ export const crearNotaAgente = internalMutation({
   returns: agentNoteValidator,
   handler: async (ctx, args) => {
     const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);
-    if (args.title !== undefined && args.title.length > 300) throw new Error("El título supera 300 caracteres.");
-    if (args.content.length > 500_000) throw new Error("La nota supera 500.000 caracteres.");
+    if (args.title !== undefined && args.title.length > 300) throw new ConvexError("El título supera 300 caracteres.");
+    if (args.content.length > 500_000) throw new ConvexError("La nota supera 500.000 caracteres.");
     if (args.projectId) await ensureProject(ctx, args.workspaceId, args.projectId);
     const now = Date.now(); const uuid = crypto.randomUUID();
     const id = await ctx.db.insert("notes", { uuid, userId: userIdPersonal(), workspaceId: args.workspaceId, projectId: args.projectId, kind: "note", status: "open", title: args.title?.trim() || undefined, content: args.content, createdAt: now, updatedAt: now });
     await addEvent(ctx, { workspaceId: args.workspaceId, projectId: args.projectId, actor: { kind: "agent", id: agent._id }, eventType: "note_created", entityType: "note", entityId: uuid, summary: `Creó la nota ${args.title?.trim() || "sin título"}` });
-    const note = await ctx.db.get(id); if (!note) throw new Error("No se pudo crear la nota.");
+    const note = await ctx.db.get(id); if (!note) throw new ConvexError("No se pudo crear la nota.");
     return publicAgentNote(note);
   },
 });
@@ -466,9 +470,9 @@ export const actualizarNotaAgente = internalMutation({
   handler: async (ctx, args) => {
     const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);
     const note = await ctx.db.query("notes").withIndex("by_uuid", (q) => q.eq("uuid", args.id)).unique();
-    if (!note || note.workspaceId !== args.workspaceId || note.deletedAt !== undefined) throw new Error("La nota no pertenece a este espacio.");
-    if (args.title && args.title.length > 300) throw new Error("El título supera 300 caracteres.");
-    if (args.content !== undefined && args.content.length > 500_000) throw new Error("La nota supera 500.000 caracteres.");
+    if (!note || note.workspaceId !== args.workspaceId || note.deletedAt !== undefined) throw new ConvexError("La nota no pertenece a este espacio.");
+    if (args.title && args.title.length > 300) throw new ConvexError("El título supera 300 caracteres.");
+    if (args.content !== undefined && args.content.length > 500_000) throw new ConvexError("La nota supera 500.000 caracteres.");
     if (args.projectId) await ensureProject(ctx, args.workspaceId, args.projectId);
     const patch: { title?: string; content?: string; status?: "open" | "attended"; projectId?: Id<"projects">; updatedAt: number } = { updatedAt: Date.now() };
     if (args.title !== undefined) patch.title = args.title?.trim() || undefined;
@@ -477,7 +481,7 @@ export const actualizarNotaAgente = internalMutation({
     if (args.projectId !== undefined) patch.projectId = args.projectId ?? undefined;
     await ctx.db.patch(note._id, patch);
     await addEvent(ctx, { workspaceId: args.workspaceId, projectId: args.projectId ?? note.projectId, actor: { kind: "agent", id: agent._id }, eventType: "note_updated", entityType: "note", entityId: args.id, summary: `Actualizó la nota ${args.title ?? note.title ?? "sin título"}` });
-    const updated = await ctx.db.get(note._id); if (!updated) throw new Error("No se pudo actualizar la nota.");
+    const updated = await ctx.db.get(note._id); if (!updated) throw new ConvexError("No se pudo actualizar la nota.");
     return publicAgentNote(updated);
   },
 });
@@ -489,7 +493,7 @@ export const borrarNotaAgente = internalMutation({
     const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);
     const note = await ctx.db.query("notes").withIndex("by_uuid", q => q.eq("uuid", args.id)).unique();
     if (!note) return false;
-    if (note.workspaceId !== args.workspaceId) throw new Error("La nota no pertenece a este espacio.");
+    if (note.workspaceId !== args.workspaceId) throw new ConvexError("La nota no pertenece a este espacio.");
     if (note.deletedAt !== undefined) return true;
     for await (const link of ctx.db.query("noteLinks").withIndex("by_sourceNoteId_and_targetNoteId", q => q.eq("sourceNoteId", args.id))) await ctx.db.delete("noteLinks", link._id);
     for await (const link of ctx.db.query("noteLinks").withIndex("by_targetNoteId", q => q.eq("targetNoteId", args.id))) await ctx.db.delete("noteLinks", link._id);
@@ -507,7 +511,7 @@ export const borrarNotaAgente = internalMutation({
 export const comentariosAgente = internalQuery({
   args: { workspaceId: v.id("workspaces"), taskId: v.id("tasks") }, returns: v.array(commentValidator),
   handler: async (ctx, { workspaceId, taskId }) => {
-    const task = await ctx.db.get(taskId); if (!task || task.workspaceId !== workspaceId) throw new Error("La tarea no pertenece a este espacio.");
+    const task = await ctx.db.get(taskId); if (!task || task.workspaceId !== workspaceId) throw new ConvexError("La tarea no pertenece a este espacio.");
     const docs = await ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", (q) => q.eq("taskId", taskId)).order("asc").take(500);
     return docs.map(publicComment);
   },

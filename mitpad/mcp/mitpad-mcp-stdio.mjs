@@ -8,5 +8,5 @@ if (!apiKey) {
   process.exit(2);
 }
 
-const server = createMitpadServer(apiKey);
+const server = createMitpadServer(apiKey, process.env.MITPAD_CONVEX_SITE_URL, { localFileAccess: true });
 await server.connect(new StdioServerTransport());

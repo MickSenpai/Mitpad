@@ -78,7 +78,7 @@ export default defineSchema({
     projectId: v.id("projects"),
     projectName: v.string(),
     phase: v.union(
-      v.literal("notes"), v.literal("images"), v.literal("comments"), v.literal("tasks"),
+      v.literal("notes"), v.literal("images"), v.literal("files"), v.literal("comments"), v.literal("tasks"),
       v.literal("knowledge"), v.literal("sourceLinks"), v.literal("targetLinks"),
       v.literal("events"), v.literal("finish"),
     ),
@@ -244,6 +244,20 @@ export default defineSchema({
     .index("by_workspaceId_and_localId", ["workspaceId", "localId"])
     .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
     .index("by_noteId_and_createdAt", ["noteId", "createdAt"])
+    .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),
+
+  workspaceFiles: defineTable({
+    workspaceId: v.id("workspaces"),
+    projectId: v.optional(v.id("projects")),
+    storageId: v.id("_storage"),
+    filename: v.string(),
+    contentType: v.string(),
+    size: v.number(),
+    tags: v.optional(v.array(v.string())),
+    uploadedByAgentId: v.optional(v.id("agents")),
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
     .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),
 
   // Relaciones entre notas, tipo Obsidian
