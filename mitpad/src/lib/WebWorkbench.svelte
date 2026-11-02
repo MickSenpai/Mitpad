@@ -9,8 +9,10 @@
     import AccountProfile from '$lib/AccountProfile.svelte';
     import PrivateVault from '$lib/PrivateVault.svelte';
     import { isMissingLegacyWorkspaceLink } from '$lib/convexCompat';
+    import { extractDocumentPreview } from '$lib/filePreview';
 
     const MCP_ENDPOINT = 'https://mitpad.onrender.com/mcp';
+    type DiagnosticStatus = 'pending' | 'checking' | 'ok' | 'error';
 
     type Status = 'backlog' | 'todo' | 'in_progress' | 'review' | 'done' | 'blocked';
     const statuses: { id: Status; label: string }[] = [
@@ -28,7 +30,7 @@
     let timer: ReturnType<typeof setInterval>;
     let connected = false, busy = false, uploading = false;
     let error = '', notice = '', lastSync: number | null = null;
-    let projects: any[] = [], projectLinks: any[] = [], knowledge: any[] = [], tasks: any[] = [], agents: any[] = [], events: any[] = [], notes: any[] = [], images: any[] = [];
+    let projects: any[] = [], projectLinks: any[] = [], knowledge: any[] = [], tasks: any[] = [], agents: any[] = [], events: any[] = [], notes: any[] = [], images: any[] = [], files: any[] = [];
     let selectedProject: Id<'projects'> | '' = '', selectedNote = '';
     let taskStatusFilter = 'all', agentFilter = 'all', priorityFilter = 'all', activityFilter = 'all';
     let search = '', newProjectName = '', newProjectDescription = '', newTaskTitle = '', newTaskDescription = '';
@@ -36,15 +38,22 @@
     let relationSource: Id<'projects'> | '' = '', relationTarget: Id<'projects'> | '' = '', relationDescription = '';
     let remoteAgentName = 'OpenCode', remoteAgentModel = 'auto', remoteAgentProvider = 'auto', remoteAgentKey = '';
     let remoteAgentClient = 'codex', remoteAgentCheck = '', remoteAgentChecking = false;
+    let remoteAgentDiagnostics: { label: string; status: DiagnosticStatus; detail: string }[] = [];
+    let fileSearch = '', fileTagFilter = '', editingFileTagsId = '', fileTagDraft = '', previewFile: any = null, previewContent = '', previewLoading = false, previewError = '';
     let editingAgent: any = null, editAgentName = '', editAgentModel = '', editAgentProvider = '', editAgentClient = '';
     let selectedTask: any = null, taskComments: any[] = [], taskComment = '', taskCommentKind = 'message';
     let noteTitle = '', noteContent = '', noteProject: Id<'projects'> | '' = '', noteStatus: 'open' | 'attended' = 'open';
-    let section: 'projects' | 'board' | 'notes' | 'images' | 'activity' | 'agents' | 'graph' | 'secrets' = 'projects';
+    let section: 'projects' | 'board' | 'notes' | 'images' | 'files' | 'activity' | 'agents' | 'graph' | 'secrets' = 'projects';
     let selectedGraphNode: any = null;
-    let graphFile: HTMLInputElement;
+    let workspaceFileInput: HTMLInputElement;
     $: visibleTasks = tasks.filter(t => (!selectedProject || t.projectId === selectedProject) && (taskStatusFilter === 'all' || t.status === taskStatusFilter) && (agentFilter === 'all' || t.assigneeAgentId === agentFilter || agentFilter === 'unassigned' && !t.assigneeAgentId) && (priorityFilter === 'all' || t.priority === priorityFilter) && (!search.trim() || `${t.title} ${t.description}`.toLowerCase().includes(search.trim().toLowerCase())));
     $: selectedProjectName = projects.find(p => p.id === selectedProject)?.name ?? 'Todos los proyectos';
     $: currentNote = notes.find(n => n.id === selectedNote);
+    $: visibleFiles = files.filter(file =>
+        (!selectedProject || file.projectId === selectedProject) &&
+        (!fileSearch.trim() || `${file.filename} ${(file.tags ?? []).join(' ')}`.toLowerCase().includes(fileSearch.trim().toLowerCase())) &&
+        (!fileTagFilter.trim() || (file.tags ?? []).some((tag: string) => tag.toLowerCase().includes(fileTagFilter.trim().toLowerCase())))
+    );
     $: graphNodes = (() => {
         const visibleProjects = projects.filter(p => !selectedProject || p.id === selectedProject);
         const overviewRadius = Math.max(360, visibleProjects.length * 135);
@@ -134,7 +143,7 @@
         busy = true; if (!quiet) { error = ''; notice = ''; }
         try {
             const data: any = await client.query(api.web.dashboard, {});
-            projects = data.projects; projectLinks = data.projectLinks; knowledge = data.knowledge; tasks = data.tasks; agents = data.agents; events = data.events; notes = data.notes; images = data.images;
+            projects = data.projects; projectLinks = data.projectLinks; knowledge = data.knowledge; tasks = data.tasks; agents = data.agents; events = data.events; notes = data.notes; images = data.images; files = data.files;
             if (selectedProject && !projects.some(p => p.id === selectedProject)) selectedProject = '';
             if (selectedNote && !notes.some(n => n.id === selectedNote)) selectedNote = '';
             connected = true; lastSync = Date.now(); if (!quiet) notice = 'Workspace actualizado desde Convex.';
@@ -148,7 +157,7 @@
         finally { busy = false; }
     }
 
-    function clearData() { projects = []; projectLinks = []; knowledge = []; tasks = []; agents = []; events = []; notes = []; images = []; lastSync = null; selectedProject = ''; selectedNote = ''; selectedTask = null; taskComments = []; }
+    function clearData() { projects = []; projectLinks = []; knowledge = []; tasks = []; agents = []; events = []; notes = []; images = []; files = []; lastSync = null; selectedProject = ''; selectedNote = ''; selectedTask = null; taskComments = []; }
     async function createProject() {
         if (!client || !newProjectName.trim()) return; busy = true;
         try { const p: any = await client.mutation(api.web.crearProyecto, { name: newProjectName.trim(), description: newProjectDescription.trim() }); newProjectName = ''; newProjectDescription = ''; selectedProject = p.id; await refresh(true); notice = 'Proyecto creado.'; }
@@ -161,7 +170,7 @@
         catch (e) { error = `No se pudo editar el proyecto: ${message(e)}`; }
     }
     async function deleteProject(project: any) {
-        if (!client || !window.confirm(`¿Eliminar permanentemente “${project.name}”? Se borrarán sus tareas, comentarios, contexto y relaciones. Las notas e imágenes se conservarán sin vínculo al proyecto.`)) return;
+        if (!client || !window.confirm(`¿Eliminar permanentemente “${project.name}”? Se borrarán sus tareas, comentarios, contexto y relaciones. Las notas, imágenes y archivos se conservarán sin vínculo al proyecto.`)) return;
         busy = true;
         try {
             await client.mutation(api.web.borrarProyecto, { projectId: project.id });
@@ -173,6 +182,7 @@
             projectLinks = projectLinks.filter(item => item.sourceProjectId !== project.id && item.targetProjectId !== project.id);
             notes = notes.map(item => item.projectId === project.id ? { ...item, projectId: null } : item);
             images = images.map(item => item.projectId === project.id ? { ...item, projectId: null } : item);
+            files = files.map(item => item.projectId === project.id ? { ...item, projectId: null } : item);
             busy = false;
             notice = `Empezó la eliminación de “${project.name}”. Sus datos se están procesando por lotes.`;
             setTimeout(() => void refresh(true), 5000);
@@ -194,7 +204,7 @@
         try {
             const created = await client.mutation(api.web.crearCredencialAgente, { name: remoteAgentName.trim(), model: remoteAgentModel.trim() || 'auto', modelProvider: remoteAgentProvider.trim() || 'auto', clientType: remoteAgentClient });
             remoteAgentKey = created.apiKey;
-            remoteAgentCheck = ''; remoteAgentName = 'OpenCode'; remoteAgentModel = 'auto'; remoteAgentProvider = 'auto';
+            remoteAgentCheck = ''; remoteAgentDiagnostics = []; remoteAgentName = 'OpenCode'; remoteAgentModel = 'auto'; remoteAgentProvider = 'auto';
             await refresh(true); notice = 'Clave MCP creada. Cópiala ahora; no se volverá a mostrar.';
         } catch (e) { error = `No se pudo crear la conexión MCP: ${message(e)}`; }
     }
@@ -210,14 +220,26 @@
     async function validateRemoteAgentKey() {
         if (!remoteAgentKey) return;
         remoteAgentChecking = true; remoteAgentCheck = '';
+        remoteAgentDiagnostics = [
+            { label: 'Servidor MCP', status: 'checking', detail: 'Conectando…' },
+            { label: 'Credencial', status: 'pending', detail: 'Pendiente' },
+            { label: 'Herramientas', status: 'pending', detail: 'Pendiente' },
+            { label: 'Workspace', status: 'pending', detail: 'Pendiente' },
+        ];
+        let currentStage = 'Servidor MCP';
+        const setDiagnostic = (label: string, status: DiagnosticStatus, detail: string) => {
+            remoteAgentDiagnostics = remoteAgentDiagnostics.map(item => item.label === label ? { ...item, status, detail } : item);
+        };
         try {
-            const send = async (id: number, method: string, params?: unknown) => {
+            let protocolVersion: string | null = null;
+            const send = async (id: number | undefined, method: string, params?: unknown) => {
                 const response = await fetch(MCP_ENDPOINT, {
                     method: 'POST',
-                    headers: { Authorization: `Bearer ${remoteAgentKey}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
-                    body: JSON.stringify({ jsonrpc: '2.0', id, method, ...(params === undefined ? {} : { params }) }),
+                    headers: { Authorization: `Bearer ${remoteAgentKey}`, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...(protocolVersion ? { 'MCP-Protocol-Version': protocolVersion } : {}) },
+                    body: JSON.stringify({ jsonrpc: '2.0', ...(id === undefined ? {} : { id }), method, ...(params === undefined ? {} : { params }) }),
                     signal: AbortSignal.timeout(25_000),
                 });
+                setDiagnostic('Servidor MCP', 'ok', `Respondió HTTP ${response.status}`);
                 const body = await response.text();
                 let payload: any;
                 try {
@@ -226,23 +248,40 @@
                         payload = data ? JSON.parse(data) : null;
                     } else payload = body ? JSON.parse(body) : null;
                 } catch { throw new Error(`El servidor MCP respondió con contenido inesperado (${response.status}).`); }
-                if (!response.ok) throw new Error(payload?.error ?? (response.status === 401 ? 'La clave no es válida o fue revocada.' : `El servidor respondió ${response.status}.`));
+                if (!response.ok) {
+                    if (response.status === 401 || response.status === 403) {
+                        currentStage = 'Credencial';
+                        setDiagnostic('Credencial', 'error', payload?.error ?? 'La clave no es válida o fue revocada.');
+                    }
+                    throw new Error(payload?.error ?? (response.status === 401 ? 'La clave no es válida o fue revocada.' : `El servidor respondió ${response.status}.`));
+                }
                 if (payload?.error) throw new Error(payload.error.message ?? 'Falló la comunicación MCP.');
                 return payload?.result;
             };
-            await send(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'mitpad-setup-check', version: '1.0.0' } });
+            const initialized = await send(1, 'initialize', { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'mitpad-setup-check', version: '1.0.0' } });
+            setDiagnostic('Credencial', 'ok', 'Clave aceptada por Mitpad');
+            protocolVersion = initialized?.protocolVersion ?? '2025-03-26';
+            await send(undefined, 'notifications/initialized');
+            currentStage = 'Herramientas';
+            setDiagnostic('Herramientas', 'checking', 'Enumerando…');
             const listed = await send(2, 'tools/list', {});
+            setDiagnostic('Herramientas', 'ok', `${listed?.tools?.length ?? 0} herramientas disponibles`);
+            currentStage = 'Workspace';
+            setDiagnostic('Workspace', 'checking', 'Consultando proyectos…');
             const read = await send(3, 'tools/call', { name: 'mitpad_projects_list', arguments: {} });
             if (read?.isError) throw new Error(read.content?.[0]?.text ?? 'No se pudo consultar el workspace.');
             const textResult = read?.content?.find((part: any) => part.type === 'text')?.text ?? '[]';
             let projectCount = 0;
             try { const projects = JSON.parse(textResult); projectCount = Array.isArray(projects) ? projects.length : 0; } catch { /* A successful MCP tool call still confirms connectivity. */ }
+            setDiagnostic('Workspace', 'ok', `${projectCount} proyectos consultados`);
             remoteAgentCheck = `Conexión MCP lista · ${listed?.tools?.length ?? 0} herramientas · ${projectCount} proyectos consultados`;
         } catch (e) {
             const detail = message(e);
+            const current = remoteAgentDiagnostics.find(item => item.label === currentStage);
+            if (current?.status !== 'error') setDiagnostic(currentStage, 'error', detail);
             remoteAgentCheck = /failed to fetch|networkerror|network request failed/i.test(detail)
-                ? 'No se alcanzó el servidor MCP. Revisa que esté activo e inténtalo de nuevo; la prueba también necesita conexión a internet.'
-                : `La prueba MCP falló: ${detail}`;
+                ? 'No hubo respuesta utilizable. Revisa la red, el servidor y los permisos CORS del cliente.'
+                : `La prueba se detuvo en ${currentStage}: ${detail}`;
         }
         finally { remoteAgentChecking = false; }
     }
@@ -325,9 +364,54 @@
             const { storageId } = await response.json();
             await client.mutation(api.web.registrarImagen, { projectId: projectId ?? undefined, noteId, storageId, filename: file.name });
             await refresh(true); notice = noteId ? 'Imagen adjunta a la nota.' : 'Imagen vinculada al proyecto.';
-        } catch (e) { error = `No se pudo cargar la imagen: ${message(e)}`; } finally { uploading = false; if (graphFile) graphFile.value = ''; }
+        } catch (e) { error = `No se pudo cargar la imagen: ${message(e)}`; } finally { uploading = false; }
     }
     async function deleteImage(image: any) { if (!client) return; try { await client.mutation(api.web.borrarImagen, { imageId: image.id }); images = images.filter(i => i.id !== image.id); } catch (e) { error = `No se pudo borrar la imagen: ${message(e)}`; } }
+    async function uploadWorkspaceFile(file?: File) {
+        if (!client || !file) return;
+        if (file.size < 1 || file.size > 25 * 1024 * 1024) { error = 'El archivo debe pesar menos de 25 MB.'; return; }
+        uploading = true; error = '';
+        try {
+            const url = await client.mutation(api.web.crearUrlSubidaArchivo, { projectId: selectedProject || null });
+            const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file });
+            if (!response.ok) throw new Error(`Carga fallida (${response.status}).`);
+            const { storageId } = await response.json();
+            await client.mutation(api.web.registrarArchivo, { projectId: selectedProject || null, storageId, filename: file.name });
+            await refresh(true); notice = 'Archivo guardado en tu espacio.';
+        } catch (e) { error = `No se pudo cargar el archivo: ${message(e)}`; }
+        finally { uploading = false; if (workspaceFileInput) workspaceFileInput.value = ''; }
+    }
+    async function deleteWorkspaceFile(file: any) {
+        if (!client) return;
+        try { await client.mutation(api.web.borrarArchivo, { fileId: file.id }); files = files.filter(item => item.id !== file.id); }
+        catch (e) { error = `No se pudo borrar el archivo: ${message(e)}`; }
+    }
+    function canPreviewFile(file: any) {
+        const extension = file.filename.split('.').pop()?.toLowerCase();
+        return file.contentType === 'application/pdf' || ['txt', 'csv', 'json', 'rtf', 'docx', 'xlsx', 'pptx', 'odt', 'ods', 'odp'].includes(extension);
+    }
+    async function openFilePreview(file: any) {
+        previewFile = file; previewContent = ''; previewError = ''; previewLoading = true;
+        if (!file.url) { previewError = 'El enlace del archivo ya no está disponible. Actualiza el workspace.'; previewLoading = false; return; }
+        if (file.contentType === 'application/pdf') { previewLoading = false; return; }
+        try {
+            if (!file.url) throw new Error('El enlace del archivo ya no está disponible. Actualiza el workspace.');
+            const response = await fetch(file.url);
+            if (!response.ok) throw new Error(`No se pudo descargar la vista previa (${response.status}).`);
+            const blob = await response.blob();
+            previewContent = await extractDocumentPreview(new File([blob], file.filename, { type: file.contentType }));
+        } catch (e) { previewError = message(e); }
+        finally { previewLoading = false; }
+    }
+    async function saveFileTags(file: any) {
+        if (!client) return;
+        const tags = fileTagDraft.split(',').map(tag => tag.trim()).filter(Boolean);
+        try {
+            await client.mutation(api.web.actualizarEtiquetasArchivo, { fileId: file.id, tags });
+            files = files.map(item => item.id === file.id ? { ...item, tags: [...new Set(tags.map(tag => tag.toLowerCase()))] } : item);
+            editingFileTagsId = ''; fileTagDraft = ''; notice = 'Etiquetas actualizadas.';
+        } catch (e) { error = `No se pudieron guardar las etiquetas: ${message(e)}`; }
+    }
     async function signOut() { await authSignOut?.(); }
     async function openProfile() { showProfile = true; }
     function closeProfile() { showProfile = false; }
@@ -353,6 +437,7 @@
                     <button aria-label="Tablero" title="Tablero" class:active={section === 'board'} on:click={() => section = 'board'}><span>▦</span><span class="nav-text">Tablero</span></button>
                     <button aria-label="Memoria" title="Memoria" class:active={section === 'notes'} on:click={() => section = 'notes'}><span>▤</span><span class="nav-text">Memoria</span><span class="nav-count">{notes.length}</span></button>
                     <button aria-label="Imágenes" title="Imágenes" class:active={section === 'images'} on:click={() => section = 'images'}><span>▧</span><span class="nav-text">Imágenes</span><span class="nav-count">{images.length}</span></button>
+                    <button aria-label="Archivos" title="Archivos" class:active={section === 'files'} on:click={() => section = 'files'}><span>▤</span><span class="nav-text">Archivos</span><span class="nav-count">{files.length}</span></button>
                     <button aria-label="Actividad" title="Actividad" class:active={section === 'activity'} on:click={() => section = 'activity'}><span>◷</span><span class="nav-text">Actividad</span></button>
                     <button aria-label="Agentes" title="Agentes" class:active={section === 'agents'} on:click={() => section = 'agents'}><span>⌘</span><span class="nav-text">Agentes</span><span class="nav-count">{agents.length}</span></button>
                     <button aria-label="Variables privadas" title="Variables privadas" class:active={section === 'secrets'} on:click={() => section = 'secrets'}><span>⚿</span><span class="nav-text">Claves privadas</span></button>
@@ -363,7 +448,7 @@
             <div class="sidebar-bottom"><button class="sidebar-user" on:click={() => void openProfile()}><span class="pilot-avatar">{userEmail.slice(0, 1).toUpperCase()}</span><span class="pilot-text"><strong>{userEmail}</strong><small>Mi perfil</small></span></button><span class="cloud-indicator" class:cloud-on={connected} title={connected ? 'Sincronizado con Convex' : 'Sin conexión'}>●</span></div>
         </aside>
         <div class="main-area">
-            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'secrets' ? 'Claves privadas' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? '● Conectado · 5 min' : '○ Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
+            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'files' ? 'Archivos' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'secrets' ? 'Claves privadas' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? '● Conectado · 5 min' : '○ Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
             {#if error}<div class="alert error">{error}</div>{/if}{#if notice}<div class="alert notice">{notice}</div>{/if}
             <section class="dashboard">
         {#if !connected}<div class="reconnect-banner"><strong>Workspace sin actualizar</strong><span>Conservamos esta vista y volveremos a intentarlo automáticamente.</span><button on:click={() => void refresh()} disabled={busy}>{busy ? 'Conectando…' : 'Reintentar ahora'}</button></div>{/if}<div class="intro"><div><div class="eyebrow">SUPERVISIÓN DEL WORKSPACE</div><h1>Proyectos y agentes, de un vistazo</h1><p>Monitorea cambios, notas y archivos desde Convex.</p></div><div class="last-sync"><span>Última consulta</span><strong>{lastSync ? date(lastSync) : 'Conectando…'}</strong><small>{projects.length} proyectos · {tasks.length} tareas · {agents.length} agentes</small></div></div>
@@ -379,6 +464,29 @@
         {:else if section === 'projects'}<section class="work-panel project-library"><div class="panel-head"><div><div class="eyebrow">ESPACIOS DE TRABAJO</div><h2>Proyectos</h2></div><span>{projects.length} en tu workspace</span></div><form class="create-project" on:submit|preventDefault={createProject}><input bind:value={newProjectName} placeholder="Nombre del proyecto" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>＋ Crear proyecto</button></form><div class="project-grid">{#each projects as p (p.id)}<article class="project-card" class:selected={selectedProject === p.id}><button class="project-open" on:click={() => { selectedProject = p.id; section = 'board'; }}><span class="project-status" class:archived={p.status === 'archived'}>{p.status === 'active' ? 'Activo' : 'Archivado'}</span><strong>{p.name}</strong><p>{p.description || 'Sin descripción'}</p><small>{tasks.filter(t => t.projectId === p.id).length} tareas · {knowledge.filter(k => k.projectId === p.id).length} elementos de contexto</small></button><div class="project-card-actions"><button class="project-edit-button" on:click={() => startProjectEdit(p)}>Editar</button><button class="project-delete-button" on:click={() => void deleteProject(p)} disabled={busy}>Eliminar</button></div></article>{/each}{#if !projects.length}<div class="empty">Crea tu primer proyecto para empezar.</div>{/if}</div>{#if editingProject}<form class="project-edit-form" on:submit|preventDefault={saveProjectEdit}><div class="eyebrow">EDITAR PROYECTO</div><input bind:value={editProjectName} placeholder="Nombre" required /><textarea bind:value={editProjectDescription} placeholder="Descripción" rows="3"></textarea><div><button class="primary" disabled={busy}>Guardar cambios</button><button type="button" class="subtle-button" on:click={() => editingProject = ''}>Cancelar</button></div></form>{/if}<section class="project-relations"><div class="eyebrow">CONEXIONES</div><h3>Relaciones entre proyectos</h3><form class="relation-form" on:submit|preventDefault={createProjectRelation}><select aria-label="Proyecto de origen" bind:value={relationSource}><option value="">Desde…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Proyecto relacionado" bind:value={relationTarget}><option value="">Hacia…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><input bind:value={relationDescription} placeholder="Qué los relaciona" /><button disabled={!relationSource || !relationTarget || relationSource === relationTarget}>Vincular</button></form>{#each projectLinks as link (link.id)}<div class="relation-row"><span>{projects.find(p => p.id === link.sourceProjectId)?.name ?? 'Proyecto'} ↔ {projects.find(p => p.id === link.targetProjectId)?.name ?? 'Proyecto'}</span><small>{link.description || link.relationType}</small><button on:click={() => void deleteProjectRelation(link)} aria-label="Quitar relación">×</button></div>{/each}</section></section>
         {:else if section === 'notes'}<div class="content-grid"><section class="side-panel note-list"><div class="eyebrow">MEMORIA</div><h2>Notas conservadas</h2>{#each notes as n (n.id)}<div class="note-row-wrap"><button class="note-row" class:selected={selectedNote === n.id} on:click={() => chooseNote(n)}><strong>{n.title || 'Sin título'}</strong><small>{n.status === 'attended' ? 'Atendida' : 'Abierta'} · {projects.find(p => p.id === n.projectId)?.name ?? 'Sin proyecto'}</small></button><button class="note-delete" aria-label={`Eliminar nota ${n.title || 'sin título'}`} title="Eliminar nota" on:click={() => void deleteNote(n)} disabled={busy}>×</button></div>{/each}<button class="new-note" on:click={() => chooseNote()}>＋ Nueva nota</button></section><section class="work-panel note-editor"><div class="eyebrow">{selectedNote ? 'EDITAR NOTA' : 'NUEVA NOTA'}</div><input class="note-title" bind:value={noteTitle} placeholder="Título" /><div class="note-meta"><select aria-label="Proyecto asociado" bind:value={noteProject}><option value="">Sin proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Estado de nota" bind:value={noteStatus}><option value="open">Abierta</option><option value="attended">Atendida</option></select></div><textarea bind:value={noteContent} placeholder="Escribe contexto útil para ti y tus agentes…"></textarea><button class="primary" on:click={() => void saveNote()} disabled={busy}>Guardar nota</button>{#if selectedNote}<label class="upload note-upload">＋ Adjuntar imagen<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0], selectedNote)} /></label><div class="note-attachments">{#each images.filter(image => image.noteId === selectedNote) as image (image.id)}<figure><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><figcaption>{image.filename}<button on:click={() => void deleteImage(image)} aria-label={`Eliminar ${image.filename}`}>×</button></figcaption></figure>{/each}</div>{/if}</section></div>
         {:else if section === 'images'}<section class="work-panel image-library"><div class="panel-head"><div><div class="eyebrow">ARCHIVOS DEL PROYECTO</div><h2>Imágenes</h2></div><select aria-label="Proyecto para imágenes" bind:value={selectedProject}><option value="">Elige un proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p>Las imágenes se guardan en Convex Storage y quedan vinculadas al proyecto seleccionado. Límite: 10 MB por archivo.</p><label class="upload">{uploading ? 'Subiendo…' : '＋ Subir imagen'}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={!selectedProject || uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0])} /></label><div class="image-grid">{#each images.filter(i => !selectedProject || i.projectId === selectedProject) as image (image.id)}<article><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><div><strong>{image.filename}</strong><small>{projects.find(p => p.id === image.projectId)?.name ?? 'Proyecto'} · {(image.size / 1024).toFixed(0)} KB</small><button on:click={() => void deleteImage(image)}>Quitar</button></div></article>{/each}</div>{#if !images.length}<div class="empty">Todavía no hay imágenes.</div>{/if}</section>
+        {:else if section === 'files'}
+            <section class="work-panel image-library">
+                <div class="panel-head"><div><div class="eyebrow">BIBLIOTECA DEL WORKSPACE</div><h2>Archivos</h2></div><select aria-label="Filtrar archivos por proyecto" bind:value={selectedProject}><option value="">Todo el workspace</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div>
+                <p>Sube PDF, documentos, hojas de cálculo, presentaciones, CSV o texto. Hasta 25 MB por archivo y 1 GB por workspace.</p>
+                <div class="file-search-row"><input bind:value={fileSearch} aria-label="Buscar archivos" placeholder="Buscar por nombre o etiqueta…" /><input bind:value={fileTagFilter} aria-label="Filtrar por etiqueta" placeholder="Filtrar etiqueta…" /></div>
+                <label class="upload">{uploading ? 'Subiendo…' : '＋ Subir archivo'}<input bind:this={workspaceFileInput} type="file" accept=".pdf,.txt,.md,.markdown,.csv,.json,.rtf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.zip" disabled={uploading} on:change={e => void uploadWorkspaceFile((e.currentTarget as HTMLInputElement).files?.[0])} /></label>
+                <div class="file-list">
+                    {#each visibleFiles as file (file.id)}
+                        <article>
+                            <span class="file-icon">{file.contentType === 'application/pdf' ? 'PDF' : file.filename.split('.').pop()?.toUpperCase() ?? 'FILE'}</span>
+                            <div class="file-info"><strong>{file.filename}</strong><small>{projects.find(p => p.id === file.projectId)?.name ?? 'Todo el workspace'} · {(file.size / 1024 / 1024).toFixed(file.size >= 1024 * 1024 ? 1 : 2)} MB · {date(file.createdAt)}</small>
+                                {#if file.tags?.length}<div class="file-tags">{#each file.tags as tag}<span>{tag}</span>{/each}</div>{/if}
+                                {#if editingFileTagsId === file.id}<form class="file-tag-form" on:submit|preventDefault={() => void saveFileTags(file)}><input bind:value={fileTagDraft} maxlength="340" aria-label="Etiquetas separadas por coma" placeholder="diseño, contrato, referencia" /><button class="subtle-button">Guardar etiquetas</button><button type="button" class="subtle-button" on:click={() => editingFileTagsId = ''}>Cancelar</button></form>{/if}
+                            </div>
+                            {#if canPreviewFile(file)}<button class="subtle-button" on:click={() => void openFilePreview(file)}>Vista previa</button>{/if}
+                            <a href={file.url ?? '#'} target="_blank" rel="noreferrer" aria-label={`Descargar ${file.filename}`} download={file.filename}>Descargar</a>
+                            {#if editingFileTagsId !== file.id}<button class="subtle-button" on:click={() => { editingFileTagsId = file.id; fileTagDraft = (file.tags ?? []).join(', '); }}>Etiquetas</button>{/if}
+                            <button class="subtle-button" on:click={() => void deleteWorkspaceFile(file)}>Quitar</button>
+                        </article>
+                    {/each}
+                </div>
+                {#if !visibleFiles.length}<div class="empty">No hay archivos que coincidan con la búsqueda y los filtros.</div>{/if}
+            </section>
         {:else if section === 'activity'}<section class="work-panel"><div class="panel-head"><div><div class="eyebrow">HISTORIAL</div><h2>Actividad reciente</h2></div><select class="activity-filter" aria-label="Filtrar actividad" bind:value={activityFilter}><option value="all">Todas</option><option value="agent">Agentes</option><option value="human">Personas</option></select></div><div class="events">{#each events.filter(e => activityFilter === 'all' || e.actorType === activityFilter) as e (e.id)}<article><i class:agent-event={e.actorType === 'agent'}></i><div><strong>{e.summary}</strong><small>{e.actorType === 'agent' ? `Agente ${e.actorId}` : 'Persona'} · {date(e.createdAt)}</small></div></article>{/each}{#if !events.length}<div class="empty">Aún no hay actividad registrada.</div>{/if}</div></section>
         {:else if section === 'secrets'}{#if client}<PrivateVault {client} />{/if}
         {:else if section === 'agents'}<section class="work-panel"><div class="eyebrow">EQUIPO Y CONEXIONES</div><h2>Conecta tu agente en un momento</h2><p class="graph-hint">Elige Codex, crea una credencial y copia una configuración lista para pegar. Después probamos la conexión real con el servidor MCP y una lectura de tus proyectos.</p><div class="agent-connect-guide"><span class="guide-step">01</span><div><strong>Elige tu cliente</strong><p>La guía se adapta a Codex, OpenCode y otros clientes MCP.</p></div><span class="guide-step">02</span><div><strong>Crea una clave exclusiva</strong><p>Puedes revocarla cuando quieras; Mitpad conserva solo su hash.</p></div><span class="guide-step">03</span><div><strong>Prueba antes de usar</strong><p>Confirmamos el saludo MCP, la lista de herramientas y una lectura real.</p></div></div><form class="remote-agent-form" on:submit|preventDefault={createRemoteAgent}><label>Cliente<select bind:value={remoteAgentClient}><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="cursor">Cursor</option><option value="mcp">Otro cliente MCP</option></select></label><label>Nombre del agente<input bind:value={remoteAgentName} maxlength="100" required placeholder="Codex personal" /></label><label>Modelo<input bind:value={remoteAgentModel} maxlength="120" placeholder="auto" /></label><label>Proveedor<input bind:value={remoteAgentProvider} maxlength="80" placeholder="auto" /></label><button disabled={busy}>Crear y configurar</button></form>{#if remoteAgentKey}<div class="remote-agent-secret"><div><strong>Ahora configura Codex y comprueba la conexión</strong><p>La opción de Codex copia una tabla TOML lista para añadir a tu configuración local. Incluye la clave secreta: no pegues ese contenido en un repositorio ni lo compartas.</p></div><code>{remoteAgentKey}</code>{#if remoteAgentCheck}<p class="agent-key-check">{remoteAgentCheck}</p>{/if}<div class="agent-secret-actions"><button on:click={() => void copyRemoteAgentKey()}>Copiar solo la clave</button><button class="subtle-button" on:click={() => void copyRemoteAgentSetup()}>{remoteAgentClient === 'codex' ? 'Copiar configuración de Codex' : 'Copiar guía MCP'}</button><button class="subtle-button" on:click={() => void validateRemoteAgentKey()} disabled={remoteAgentChecking}>{remoteAgentChecking ? 'Probando servidor MCP…' : 'Probar conexión completa'}</button><button class="subtle-button" on:click={() => { remoteAgentKey = ''; remoteAgentCheck = ''; }}>Ocultar clave</button></div></div>{/if}<div class="eyebrow agent-list-label">AGENTES REGISTRADOS</div>{#if editingAgent}<form class="agent-edit-form" on:submit|preventDefault={saveAgentEdit}><strong>Editar {editingAgent.name}</strong><label>Nombre<input bind:value={editAgentName} required maxlength="100" /></label><label>Modelo<input bind:value={editAgentModel} maxlength="120" /></label><label>Proveedor<input bind:value={editAgentProvider} maxlength="80" /></label><label>Cliente<input bind:value={editAgentClient} maxlength="80" /></label><div><button class="primary" disabled={busy}>Guardar</button><button type="button" class="secondary" on:click={() => editingAgent = null}>Cancelar</button></div></form>{/if}{#each agents as a (a.id)}<div class="agent"><span class:online={a.active}></span><div><strong>{a.name}{a.credentialMode === 'mcp' ? ' · MCP' : ''}</strong><small>{a.model || a.clientType} · {a.active ? 'Activo' : 'Revocado'}</small></div>{#if a.lastSeenAt}<time>{date(a.lastSeenAt)}</time>{/if}<button class="agent-edit-button" on:click={() => beginAgentEdit(a)}>Editar</button>{#if a.active && a.name.toLowerCase() !== 'meido'}<button class="revoke-agent" on:click={() => void revokeRemoteAgent(a)}>Desactivar</button>{/if}</div>{/each}{#if !agents.length}<div class="empty">Aún no hay agentes. Crea una clave MCP para conectar el primero.</div>{/if}</section>
@@ -386,7 +494,9 @@
     </section>
         </div>
     </div>
+    {#if remoteAgentDiagnostics.length}<aside class="mcp-diagnostics" aria-live="polite"><header><strong>Diagnóstico MCP</strong><button aria-label="Cerrar diagnóstico" on:click={() => remoteAgentDiagnostics = []}>×</button></header>{#each remoteAgentDiagnostics as item}<div class="diagnostic-row"><span class="diagnostic-dot" class:diagnostic-ok={item.status === 'ok'} class:diagnostic-error={item.status === 'error'} class:diagnostic-pending={item.status === 'pending' || item.status === 'checking'}></span><strong>{item.label}</strong><small>{item.detail}</small></div>{/each}</aside>{/if}
     {#if selectedTask}<div class="task-modal-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) selectedTask = null; }}><dialog open class="task-dialog" aria-label="Detalle de tarea"><header><div><div class="eyebrow">TAREA · {projects.find(project => project.id === selectedTask.projectId)?.name ?? 'Proyecto'}</div><h2>Detalles y conversación</h2></div><button class="secondary" on:click={() => selectedTask = null}>Cerrar</button></header><label>Título<input bind:value={selectedTask.title} maxlength="200" /></label><label>Descripción<textarea bind:value={selectedTask.description} rows="4"></textarea></label><div class="task-detail-fields"><label>Estado<select bind:value={selectedTask.status}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select></label><label>Prioridad<select bind:value={selectedTask.priority}><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></label><label>Agente<select bind:value={selectedTask.assigneeAgentId}><option value={null}>Sin asignar</option>{#each agents.filter(agent => agent.active) as agent (agent.id)}<option value={agent.id}>{agent.name}</option>{/each}</select></label></div><button class="primary" on:click={() => void saveTaskDetails()} disabled={busy}>Guardar tarea</button><section class="task-conversation"><div class="eyebrow">CONVERSACIÓN · {taskComments.length}</div><form on:submit|preventDefault={addTaskComment}><select bind:value={taskCommentKind} aria-label="Tipo de comentario"><option value="message">Comentario</option><option value="instruction">Instrucción</option><option value="question">Pregunta</option><option value="decision">Decisión</option><option value="update">Actualización</option></select><textarea bind:value={taskComment} placeholder="Añade contexto para tu equipo o agente…" rows="3"></textarea><button class="primary" disabled={busy || !taskComment.trim()}>Añadir comentario</button></form><div class="task-comment-list">{#each taskComments as comment (comment.id)}<article><div><strong>{comment.authorType === 'agent' ? 'Agente' : 'Tú'}</strong><span>{comment.kind}</span><time>{date(comment.createdAt)}</time></div><p>{comment.content}</p></article>{/each}{#if !taskComments.length}<p class="empty-small">Aún no hay conversación en esta tarea.</p>{/if}</div></section></dialog></div>{/if}
+    {#if previewFile}<div class="preview-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) previewFile = null; }}><dialog open class="preview-dialog" aria-label={`Vista previa de ${previewFile.filename}`}><header><div><div class="eyebrow">VISTA PREVIA</div><strong>{previewFile.filename}</strong></div><div><a href={previewFile.url ?? '#'} target="_blank" rel="noreferrer" download={previewFile.filename}>Descargar</a><button class="secondary" on:click={() => previewFile = null}>Cerrar</button></div></header>{#if previewLoading}<div class="empty">Preparando vista previa…</div>{:else if previewError}<div class="preview-message">{previewError}</div>{:else if previewFile.contentType === 'application/pdf'}<iframe class="preview-pdf" title={`Vista previa de ${previewFile.filename}`} src={previewFile.url}></iframe>{:else}<pre class="preview-text">{previewContent}</pre>{/if}</dialog></div>{/if}
     {/if}
     <div class="auth-shell" class:auth-hidden={!!lastAuthToken}>
         <header class="auth-header"><a class="brand" href="/"><img class="brand-icon" src="/mitpad-mark-web.webp" alt="" /><span>mitpad <small>AGENT WORKBENCH · WEB</small></span></a><a class="back-to-landing" href="/">← Volver a la página principal</a></header>
@@ -557,6 +667,20 @@
     .image-grid strong { overflow-wrap:anywhere; font-size:12px; }
     .image-grid small { color:var(--muted); font-size:11px; }
     .image-grid button { justify-self:start; padding:3px 0; border:0; background:transparent; color:#e6aa8d; cursor:pointer; font-size:11px; }
+    .file-list { display:grid; gap:8px; margin-top:16px; }
+    .file-list article { display:flex; align-items:center; gap:12px; min-width:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
+    .file-icon { display:grid; place-items:center; width:42px; height:42px; flex:none; border-radius:8px; background:var(--panel-raised); color:var(--sage); font-size:10px; font-weight:750; }
+    .file-info { display:grid; gap:3px; flex:1; min-width:0; }
+    .file-info strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .file-info small { color:var(--muted); font-size:12px; }
+    .file-search-row { display:grid; grid-template-columns:2fr 1fr; gap:8px; margin-top:15px; }
+    .file-search-row input,.file-tag-form input { min-width:0; padding:9px 11px; border:1px solid #555646; border-radius:6px; background:#1b1e19; color:var(--text); }
+    .file-tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
+    .file-tags span { padding:2px 7px; border:1px solid #596447; border-radius:999px; color:#d4d9bb; font-size:10px; }
+    .file-tag-form { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
+    .file-tag-form input { flex:1; }
+    .file-list a { color:var(--sage); font-size:13px; text-decoration:none; }
+    .file-list button { flex:none; }
     .graph-workspace { margin-top:0; }
     .graph-hint { margin:13px 0; }
     .graph-canvas { height:min(68vh,720px); min-height:440px; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#1d201a; }
@@ -613,6 +737,15 @@
     .agent-secret-actions { display:flex; flex-wrap:wrap; gap:8px; }
     .agent-secret-actions button { min-height:34px; padding:6px 10px; border:1px solid #555646; border-radius:5px; background:transparent; color:var(--text); cursor:pointer; }
     .agent-key-check { color:var(--sage)!important; }
+    .mcp-diagnostics { position:fixed; z-index:35; right:20px; bottom:20px; display:grid; width:min(380px,calc(100vw - 32px)); gap:10px; padding:15px; border:1px solid #596447; border-radius:9px; background:#23261f; box-shadow:0 12px 36px #0008; }
+    .mcp-diagnostics>header,.mcp-diagnostics>header>button { display:flex; align-items:center; justify-content:space-between; }
+    .mcp-diagnostics>header>button { width:28px; height:28px; justify-content:center; border:1px solid var(--line); border-radius:5px; background:transparent; color:var(--text); cursor:pointer; }
+    .diagnostic-row { display:grid; grid-template-columns:10px 90px minmax(0,1fr); align-items:start; gap:8px; font-size:12px; }
+    .diagnostic-row small { color:var(--muted); overflow-wrap:anywhere; }
+    .diagnostic-dot { width:8px; height:8px; margin-top:4px; border-radius:50%; background:#777; }
+    .diagnostic-ok { background:#a9c583; box-shadow:0 0 8px #a9c58388; }
+    .diagnostic-error { background:#df927e; box-shadow:0 0 8px #df927e88; }
+    .diagnostic-pending { background:#d7b56d; }
     .agent-list-label { margin:24px 0 4px; padding-top:16px; border-top:1px solid var(--line); }
     .revoke-agent { min-height:31px; padding:5px 8px; font-size:11px; }
     .task-drop-targets { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:12px 0; }
@@ -634,6 +767,16 @@
     .task-open,.agent-edit-button { min-height:32px; padding:5px 9px; border:1px solid #555646; border-radius:5px; background:transparent; color:#e1ddcf; font-size:11px; cursor:pointer; }
     .task-open:hover,.agent-edit-button:hover { border-color:var(--sage); }
     .task-modal-backdrop { position:fixed; inset:0; z-index:30; display:grid; place-items:center; padding:18px; background:#0d0e0bcc; backdrop-filter:blur(7px); }
+    .preview-backdrop { position:fixed; inset:0; z-index:40; display:grid; place-items:center; padding:20px; background:#0d0e0bcc; backdrop-filter:blur(7px); }
+    .preview-dialog { position:relative; inset:auto; display:grid; grid-template-rows:auto minmax(0,1fr); width:min(1050px,100%); max-width:none; max-height:none; height:min(88vh,900px); margin:0; padding:0; overflow:hidden; border:1px solid var(--line); border-radius:10px; background:#24271f; color:var(--text); }
+    .preview-dialog>header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 17px; border-bottom:1px solid var(--line); }
+    .preview-dialog>header>div:first-child { display:grid; gap:3px; min-width:0; }
+    .preview-dialog>header strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .preview-dialog>header>div:last-child { display:flex; flex:none; align-items:center; gap:8px; }
+    .preview-dialog a { color:var(--sage); font-size:13px; text-decoration:none; }
+    .preview-pdf { width:100%; height:100%; border:0; background:#fff; }
+    .preview-text { overflow:auto; margin:0; padding:22px; color:#e4e0d4; font:13px/1.65 ui-monospace,SFMono-Regular,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .preview-message { align-self:start; margin:22px; padding:15px; border:1px solid #806344; border-radius:6px; color:#e3c393; }
     .task-dialog { display:grid; width:min(760px,100%); max-height:92vh; gap:13px; overflow:auto; padding:22px; border:1px solid var(--line); border-radius:9px; background:#24271f; color:var(--text); }
     .task-dialog>header { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-bottom:13px; border-bottom:1px solid var(--line); }
     .task-dialog h2 { margin:5px 0 0; font:600 22px 'Bricolage Grotesque',Georgia,serif; }
@@ -674,6 +817,13 @@
         .work-panel { padding:16px; }
         .panel-head { align-items:flex-start; flex-direction:column; }
         .panel-head select { width:100%; }
+        .file-search-row { grid-template-columns:minmax(0,1fr); }
+        .file-list article { align-items:flex-start; flex-wrap:wrap; }
+        .file-info { flex-basis:calc(100% - 60px); }
+        .preview-backdrop { padding:8px; }
+        .preview-dialog { height:94vh; }
+        .preview-dialog>header { align-items:flex-start; flex-direction:column; }
+        .mcp-diagnostics { right:8px; bottom:8px; }
         .task { align-items:flex-start; flex-direction:column; }
         .task select { margin-left:20px; }
         .content-grid { grid-template-columns:minmax(0,1fr); }

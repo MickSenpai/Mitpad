@@ -33,7 +33,8 @@ export async function hashAgentApiKey(apiKey: string): Promise<string> {
 
 export async function keyFromRequest(request: Request): Promise<string | null> {
   const authorization = request.headers.get("Authorization");
-  if (!authorization?.startsWith("Bearer ")) return null;
-  const key = authorization.slice(7).trim();
+  const match = authorization?.match(/^Bearer\s+(.+)$/i);
+  if (!match) return null;
+  const key = match[1].trim();
   return key.length >= 32 && key.length <= 200 ? key : null;
 }
