@@ -71,6 +71,10 @@ describe("Convex dashboard pagination", () => {
       return ids;
     });
 
+    const snapshot = await t.query(api.web.dashboard, {});
+    expect(snapshot.tasks).toHaveLength(100);
+    expect(snapshot.tasks[0]?.title).toBe("Task 234");
+
     const actual = [];
     let cursor: string | null = null;
     let isDone = false;

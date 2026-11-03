@@ -168,7 +168,9 @@
         if (!quiet) { error = ''; notice = ''; }
         try {
             const data: any = await client.query(api.web.dashboard, {});
-            applyDashboard(data, afterMutation || Boolean(search.trim() || fileSearch.trim()));
+            const preservePages = afterMutation || Boolean(search.trim() || fileSearch.trim());
+            applyDashboard(data, preservePages);
+            if (!preservePages) await loadInitialPages();
             connected = true; lastSync = Date.now(); if (!quiet) notice = 'Workspace actualizado desde Convex.';
         } catch (e) {
             connected = false;
@@ -194,12 +196,47 @@
         knowledge = preservePages ? merge(knowledge, data.knowledge) : data.knowledge;
         agents = preservePages ? merge(agents, data.agents) : data.agents;
         events = preservePages ? merge(events, data.events) : data.events;
-        if (!preservePages) {
-            pageCursors = { ...data.pageCursors };
-            pageDone = { ...data.pageDone };
-        }
         if (selectedProject && !projects.some(p => p.id === selectedProject)) selectedProject = '';
         if (selectedNote && !notes.some(n => n.id === selectedNote)) selectedNote = '';
+    }
+
+    async function loadInitialPages() {
+        const currentClient = client;
+        if (!currentClient) return;
+        const sections: PageSection[] = ['projects', 'projectLinks', 'knowledge', 'tasks', 'agents', 'events', 'notes', 'images', 'files'];
+        try {
+            const pages = await Promise.all(sections.map(async (section) => {
+                let cursor: string | null = null;
+                let page: DashboardPage;
+                let emptyPages = 0;
+                do {
+                    page = await currentClient.query(api.web.dashboardPage, { section, paginationOpts: { numItems: 100, cursor } });
+                    cursor = page.continueCursor;
+                    emptyPages++;
+                } while (section === 'notes' && !page.items.length && !page.isDone && emptyPages < 5);
+                return { section, page };
+            }));
+            const cursors = { ...pageCursors };
+            const done = { ...pageDone };
+            for (const { section, page } of pages) {
+                cursors[section] = page.continueCursor;
+                done[section] = page.isDone;
+                if (section === 'projects') projects = page.items as Dashboard['projects'];
+                if (section === 'projectLinks') projectLinks = page.items as Dashboard['projectLinks'];
+                if (section === 'knowledge') knowledge = page.items as Dashboard['knowledge'];
+                if (section === 'tasks') tasks = page.items as Dashboard['tasks'];
+                if (section === 'agents') agents = page.items as Dashboard['agents'];
+                if (section === 'events') events = page.items as Dashboard['events'];
+                if (section === 'notes') notes = page.items as Dashboard['notes'];
+                if (section === 'images') images = page.items as Dashboard['images'];
+                if (section === 'files') files = page.items as Dashboard['files'];
+            }
+            pageCursors = cursors;
+            pageDone = done;
+            pageError = '';
+        } catch (e) {
+            pageError = `No se pudieron cargar las páginas iniciales: ${message(e)}`;
+        }
     }
 
     function appendUnique<T extends { id: string }>(current: T[], incoming: T[]) {

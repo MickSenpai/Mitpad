@@ -129,32 +129,30 @@ export const migrarNotasLegadas = internalMutation({
 
 export const dashboard = query({
   args: {},
-  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(agent), events: v.array(activityEvent), notes: v.array(note), images: v.array(image), files: v.array(workspaceFile), pageCursors: v.object({ projects: v.string(), projectLinks: v.string(), knowledge: v.string(), tasks: v.string(), agents: v.string(), events: v.string(), notes: v.string(), images: v.string(), files: v.string() }), pageDone: v.object({ projects: v.boolean(), projectLinks: v.boolean(), knowledge: v.boolean(), tasks: v.boolean(), agents: v.boolean(), events: v.boolean(), notes: v.boolean(), images: v.boolean(), files: v.boolean() }) }),
+  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(agent), events: v.array(activityEvent), notes: v.array(note), images: v.array(image), files: v.array(workspaceFile) }),
   handler: async (ctx) => {
     const { workspace } = await exigirWeb(ctx);
     const [projects, projectLinks, knowledge, tasks, agents, events, notes, images, files] = await Promise.all([
-      ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 300, cursor: null }),
-      ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("asc").paginate({ numItems: 1000, cursor: null }),
-      ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).paginate({ numItems: 1000, cursor: null }),
-      ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 500, cursor: null }),
-      ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
-      ctx.db.query("activityEvents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 100, cursor: null }),
-      ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
-      ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
-      ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
+      ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
+      ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("asc").take(100),
+      ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).take(100),
+      ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
+      ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
+      ctx.db.query("activityEvents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
+      ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
+      ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
+      ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
     ]);
     return {
-      projects: projects.page.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })),
-      projectLinks: projectLinks.page.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
-      knowledge: knowledge.page.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
-      tasks: tasks.page.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
-      agents: agents.page.map(a => ({ id: a._id, name: a.name, model: a.model, modelProvider: a.modelProvider, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
-      events: events.page.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
-      notes: notes.page.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
-      images: await Promise.all(images.page.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
-      files: await Promise.all(files.page.map(async (file) => ({ id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType, size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt }))),
-      pageCursors: { projects: projects.continueCursor, projectLinks: projectLinks.continueCursor, knowledge: knowledge.continueCursor, tasks: tasks.continueCursor, agents: agents.continueCursor, events: events.continueCursor, notes: notes.continueCursor, images: images.continueCursor, files: files.continueCursor },
-      pageDone: { projects: projects.isDone, projectLinks: projectLinks.isDone, knowledge: knowledge.isDone, tasks: tasks.isDone, agents: agents.isDone, events: events.isDone, notes: notes.isDone, images: images.isDone, files: files.isDone },
+      projects: projects.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })),
+      projectLinks: projectLinks.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
+      knowledge: knowledge.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
+      tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
+      agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, modelProvider: a.modelProvider, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
+      events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
+      notes: notes.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
+      images: await Promise.all(images.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
+      files: await Promise.all(files.map(async (file) => ({ id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType, size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt }))),
     };
   },
 });
