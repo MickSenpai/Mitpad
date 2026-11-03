@@ -1,10 +1,14 @@
 /// <reference types="vite/client" />
 import { describe, expect, it } from "vitest";
 import { convexTest } from "convex-test";
+import type { FunctionReturnType } from "convex/server";
 import schema from "./schema";
 import { api } from "./_generated/api";
 
 const modules = import.meta.glob("./**/*.ts");
+type DashboardPage = FunctionReturnType<typeof api.web.dashboardPage>;
+type TaskSearchPage = FunctionReturnType<typeof api.web.buscarTareas>;
+type TaskCommentsPage = FunctionReturnType<typeof api.web.comentariosTarea>;
 
 async function authenticatedWorkspace() {
   const t = convexTest(schema, modules);
@@ -71,7 +75,7 @@ describe("Convex dashboard pagination", () => {
     let cursor: string | null = null;
     let isDone = false;
     while (!isDone) {
-      const page = await t.query(api.web.dashboardPage, {
+      const page: DashboardPage = await t.query(api.web.dashboardPage, {
         section: "tasks",
         paginationOpts: { numItems: 100, cursor },
       });
@@ -119,7 +123,7 @@ describe("Convex dashboard pagination", () => {
       let cursor: string | null = null;
       let isDone = false;
       while (!isDone) {
-        const page = await t.query(api.web.buscarTareas, {
+        const page: TaskSearchPage = await t.query(api.web.buscarTareas, {
           text: "needle",
           field,
           paginationOpts: { numItems: 50, cursor },
@@ -184,7 +188,7 @@ describe("Convex dashboard pagination", () => {
     let cursor: string | null = null;
     let isDone = false;
     while (!isDone) {
-      const page = await t.query(api.web.comentariosTarea, {
+      const page: TaskCommentsPage = await t.query(api.web.comentariosTarea, {
         taskId,
         paginationOpts: { numItems: 100, cursor },
       });
