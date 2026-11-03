@@ -131,7 +131,9 @@ export default defineSchema({
     .index("by_workspaceId_and_status_and_updatedAt", ["workspaceId", "status", "updatedAt"])
     .index("by_projectId_and_updatedAt", ["projectId", "updatedAt"])
     .index("by_projectId_and_status_and_updatedAt", ["projectId", "status", "updatedAt"])
-    .index("by_assigneeAgentId_and_status", ["assigneeAgentId", "status"]),
+    .index("by_assigneeAgentId_and_status", ["assigneeAgentId", "status"])
+    .searchIndex("search_title", { searchField: "title", filterFields: ["workspaceId"] })
+    .searchIndex("search_description", { searchField: "description", filterFields: ["workspaceId"] }),
 
   taskComments: defineTable({
     workspaceId: v.id("workspaces"),
@@ -258,7 +260,8 @@ export default defineSchema({
     createdAt: v.number(),
   })
     .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"])
-    .index("by_projectId_and_createdAt", ["projectId", "createdAt"]),
+    .index("by_projectId_and_createdAt", ["projectId", "createdAt"])
+    .searchIndex("search_filename", { searchField: "filename", filterFields: ["workspaceId"] }),
 
   // Relaciones entre notas, tipo Obsidian
   noteLinks: defineTable({
