@@ -1,4 +1,5 @@
 import { ConvexError, v } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import { env, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { hashAgentApiKey, userIdPersonal } from "./acceso";
@@ -16,6 +17,8 @@ const task = v.object({ id: v.id("tasks"), projectId: v.id("projects"), title: v
 const note = v.object({ id: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), projectId: v.union(v.id("projects"), v.null()), updatedAt: v.number() });
 const image = v.object({ id: v.id("noteImages"), projectId: v.union(v.id("projects"), v.null()), noteId: v.union(v.string(), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), url: v.union(v.string(), v.null()), createdAt: v.number() });
 const workspaceFile = v.object({ id: v.id("workspaceFiles"), projectId: v.union(v.id("projects"), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), tags: v.array(v.string()), url: v.union(v.string(), v.null()), createdAt: v.number() });
+const agent = v.object({ id: v.id("agents"), name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string(), credentialMode: v.union(v.literal("local"), v.literal("mcp"), v.null()), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) });
+const activityEvent = v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() });
 export const asegurarWorkspace = mutation({
   args: {},
   returns: v.object({ id: v.id("workspaces"), name: v.string() }),
@@ -126,30 +129,116 @@ export const migrarNotasLegadas = internalMutation({
 
 export const dashboard = query({
   args: {},
-  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(v.object({ id: v.id("agents"), name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string(), credentialMode: v.union(v.literal("local"), v.literal("mcp"), v.null()), active: v.boolean(), lastSeenAt: v.union(v.number(), v.null()) })), events: v.array(v.object({ id: v.id("activityEvents"), summary: v.string(), actorType: v.union(v.literal("human"), v.literal("agent")), actorId: v.string(), createdAt: v.number() })), notes: v.array(note), images: v.array(image), files: v.array(workspaceFile) }),
+  returns: v.object({ projects: v.array(project), projectLinks: v.array(projectLink), knowledge: v.array(knowledge), tasks: v.array(task), agents: v.array(agent), events: v.array(activityEvent), notes: v.array(note), images: v.array(image), files: v.array(workspaceFile), pageCursors: v.object({ projects: v.string(), projectLinks: v.string(), knowledge: v.string(), tasks: v.string(), agents: v.string(), events: v.string(), notes: v.string(), images: v.string(), files: v.string() }), pageDone: v.object({ projects: v.boolean(), projectLinks: v.boolean(), knowledge: v.boolean(), tasks: v.boolean(), agents: v.boolean(), events: v.boolean(), notes: v.boolean(), images: v.boolean(), files: v.boolean() }) }),
   handler: async (ctx) => {
     const { workspace } = await exigirWeb(ctx);
     const [projects, projectLinks, knowledge, tasks, agents, events, notes, images, files] = await Promise.all([
-      ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(300),
-      ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("asc").take(1000),
-      ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).take(1000),
-      ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(500),
-      ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
-      ctx.db.query("activityEvents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(100),
-      ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
-      ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
-      ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").take(200),
+      ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 300, cursor: null }),
+      ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("asc").paginate({ numItems: 1000, cursor: null }),
+      ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).paginate({ numItems: 1000, cursor: null }),
+      ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 500, cursor: null }),
+      ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
+      ctx.db.query("activityEvents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 100, cursor: null }),
+      ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
+      ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
+      ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate({ numItems: 200, cursor: null }),
     ]);
     return {
-      projects: projects.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })),
-      projectLinks: projectLinks.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
-      knowledge: knowledge.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
-      tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
-      agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, modelProvider: a.modelProvider, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
-      events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
-      notes: notes.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
-      images: await Promise.all(images.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
-      files: await Promise.all(files.map(async (file) => ({ id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType, size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt }))),
+      projects: projects.page.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })),
+      projectLinks: projectLinks.page.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
+      knowledge: knowledge.page.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
+      tasks: tasks.page.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
+      agents: agents.page.map(a => ({ id: a._id, name: a.name, model: a.model, modelProvider: a.modelProvider, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
+      events: events.page.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
+      notes: notes.page.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
+      images: await Promise.all(images.page.map(async (i) => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))),
+      files: await Promise.all(files.page.map(async (file) => ({ id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType, size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt }))),
+      pageCursors: { projects: projects.continueCursor, projectLinks: projectLinks.continueCursor, knowledge: knowledge.continueCursor, tasks: tasks.continueCursor, agents: agents.continueCursor, events: events.continueCursor, notes: notes.continueCursor, images: images.continueCursor, files: files.continueCursor },
+      pageDone: { projects: projects.isDone, projectLinks: projectLinks.isDone, knowledge: knowledge.isDone, tasks: tasks.isDone, agents: agents.isDone, events: events.isDone, notes: notes.isDone, images: images.isDone, files: files.isDone },
+    };
+  },
+});
+
+const pageSection = v.union(v.literal("projects"), v.literal("projectLinks"), v.literal("knowledge"), v.literal("tasks"), v.literal("agents"), v.literal("events"), v.literal("notes"), v.literal("images"), v.literal("files"));
+const pageItem = v.union(project, projectLink, knowledge, task, agent, activityEvent, note, image, workspaceFile);
+
+export const dashboardPage = query({
+  args: { section: pageSection, paginationOpts: paginationOptsValidator },
+  returns: v.object({ items: v.array(pageItem), continueCursor: v.string(), isDone: v.boolean() }),
+  handler: async (ctx, { section, paginationOpts }) => {
+    const { workspace } = await exigirWeb(ctx);
+    if (section === "projects") {
+      const page = await ctx.db.query("projects").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
+      return { items: page.page.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    if (section === "projectLinks") {
+      const page = await ctx.db.query("projectLinks").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("asc").paginate(paginationOpts);
+      return { items: page.page.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    if (section === "knowledge") {
+      const page = await ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", q => q.eq("workspaceId", workspace._id)).paginate(paginationOpts);
+      return { items: page.page.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    if (section === "tasks") {
+      const page = await ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
+      return { items: page.page.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    if (section === "notes") {
+      const page = await ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
+      return { items: page.page.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    if (section === "agents") {
+      const page = await ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
+      return { items: page.page.map(a => ({ id: a._id, name: a.name, model: a.model, modelProvider: a.modelProvider, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    if (section === "events") {
+      const page = await ctx.db.query("activityEvents").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
+      return { items: page.page.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    if (section === "images") {
+      const page = await ctx.db.query("noteImages").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
+      return { items: await Promise.all(page.page.map(async i => ({ id: i._id, projectId: i.projectId ?? null, noteId: i.noteId ?? null, filename: i.filename, contentType: i.contentType, size: i.size, url: await ctx.storage.getUrl(i.storageId), createdAt: i.createdAt }))), continueCursor: page.continueCursor, isDone: page.isDone };
+    }
+    const page = await ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
+    return { items: await Promise.all(page.page.map(async file => ({ id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType, size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt }))), continueCursor: page.continueCursor, isDone: page.isDone };
+  },
+});
+
+const taskSearchPage = v.object({ items: v.array(task), continueCursor: v.string(), isDone: v.boolean() });
+
+export const buscarTareas = query({
+  args: {
+    text: v.string(),
+    field: v.union(v.literal("title"), v.literal("description")),
+    paginationOpts: paginationOptsValidator,
+  },
+  returns: taskSearchPage,
+  handler: async (ctx, { text, field, paginationOpts }) => {
+    const { workspace } = await exigirWeb(ctx);
+    const term = text.trim().slice(0, 120);
+    if (!term) throw new ConvexError("Escribe un término para buscar tareas.");
+    const page = field === "title"
+      ? await ctx.db.query("tasks").withSearchIndex("search_title", q => q.search("title", term).eq("workspaceId", workspace._id)).paginate(paginationOpts)
+      : await ctx.db.query("tasks").withSearchIndex("search_description", q => q.search("description", term).eq("workspaceId", workspace._id)).paginate(paginationOpts);
+    const present = (doc: Doc<"tasks">) => ({ id: doc._id, projectId: doc.projectId, title: doc.title, description: doc.description, status: doc.status, priority: doc.priority, assigneeAgentId: doc.assigneeAgentId ?? null, createdByType: doc.createdByType, createdById: doc.createdById, updatedAt: doc.updatedAt });
+    return { items: page.page.map(present), continueCursor: page.continueCursor, isDone: page.isDone };
+  },
+});
+
+export const buscarArchivos = query({
+  args: { text: v.string(), paginationOpts: paginationOptsValidator },
+  returns: v.object({ items: v.array(workspaceFile), continueCursor: v.string(), isDone: v.boolean() }),
+  handler: async (ctx, { text, paginationOpts }) => {
+    const { workspace } = await exigirWeb(ctx);
+    const term = text.trim().slice(0, 120);
+    if (!term) throw new ConvexError("Escribe un nombre para buscar archivos.");
+    const page = await ctx.db.query("workspaceFiles")
+      .withSearchIndex("search_filename", q => q.search("filename", term).eq("workspaceId", workspace._id))
+      .paginate(paginationOpts);
+    return {
+      items: await Promise.all(page.page.map(async file => ({ id: file._id, projectId: file.projectId ?? null, filename: file.filename, contentType: file.contentType, size: file.size, tags: file.tags ?? [], url: await ctx.storage.getUrl(file.storageId), createdAt: file.createdAt }))),
+      continueCursor: page.continueCursor,
+      isDone: page.isDone,
     };
   },
 });
@@ -359,15 +448,21 @@ export const actualizarTarea = mutation({
   },
 });
 
+const taskComment = v.object({ id: v.id("taskComments"), kind: v.union(v.literal("message"), v.literal("instruction"), v.literal("question"), v.literal("answer"), v.literal("decision"), v.literal("update")), content: v.string(), authorType: v.union(v.literal("human"), v.literal("agent")), authorId: v.string(), createdAt: v.number() });
+
 export const comentariosTarea = query({
-  args: { taskId: v.id("tasks") },
-  returns: v.array(v.object({ id: v.id("taskComments"), kind: v.union(v.literal("message"), v.literal("instruction"), v.literal("question"), v.literal("answer"), v.literal("decision"), v.literal("update")), content: v.string(), authorType: v.union(v.literal("human"), v.literal("agent")), authorId: v.string(), createdAt: v.number() })),
-  handler: async (ctx, { taskId }) => {
+  args: { taskId: v.id("tasks"), paginationOpts: paginationOptsValidator },
+  returns: v.object({ items: v.array(taskComment), continueCursor: v.string(), isDone: v.boolean() }),
+  handler: async (ctx, { taskId, paginationOpts }) => {
     const { workspace } = await exigirWeb(ctx);
     const taskDoc = await ctx.db.get(taskId);
     if (!taskDoc || taskDoc.workspaceId !== workspace._id) throw new ConvexError("La tarea no pertenece al workspace.");
-    const comments = await ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", q => q.eq("taskId", taskId)).order("asc").take(500);
-    return comments.filter(comment => comment.workspaceId === workspace._id).map(comment => ({ id: comment._id, kind: comment.kind, content: comment.content, authorType: comment.authorType, authorId: comment.authorId, createdAt: comment.createdAt }));
+    const comments = await ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", q => q.eq("taskId", taskId)).order("desc").paginate(paginationOpts);
+    return {
+      items: comments.page.filter(comment => comment.workspaceId === workspace._id).map(comment => ({ id: comment._id, kind: comment.kind, content: comment.content, authorType: comment.authorType, authorId: comment.authorId, createdAt: comment.createdAt })),
+      continueCursor: comments.continueCursor,
+      isDone: comments.isDone,
+    };
   },
 });
 

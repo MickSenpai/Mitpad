@@ -1,11 +1,13 @@
 <script lang="ts">
     import { onMount, tick } from 'svelte';
     import { mountAuthBridge, type AuthSession } from '$lib/ConvexAuthIsland';
-    import { ConvexHttpClient } from 'convex/browser';
+    import { ConvexClient, ConvexHttpClient } from 'convex/browser';
+    import type { FunctionReturnType } from 'convex/server';
     import type { Id } from '../../convex/_generated/dataModel';
     import { PUBLIC_CONVEX_URL } from '$env/static/public';
     import { api } from '../../convex/_generated/api';
     import ThreeDGraph from '$lib/ThreeDGraph.svelte';
+    import PaginationFooter from '$lib/PaginationFooter.svelte';
     import AccountProfile from '$lib/AccountProfile.svelte';
     import PrivateVault from '$lib/PrivateVault.svelte';
     import { isMissingLegacyWorkspaceLink } from '$lib/convexCompat';
@@ -15,11 +17,16 @@
     type DiagnosticStatus = 'pending' | 'checking' | 'ok' | 'error';
 
     type Status = 'backlog' | 'todo' | 'in_progress' | 'review' | 'done' | 'blocked';
+    type PageSection = 'projects' | 'projectLinks' | 'knowledge' | 'tasks' | 'agents' | 'events' | 'notes' | 'images' | 'files';
+    type Dashboard = FunctionReturnType<typeof api.web.dashboard>;
+    type DashboardPage = FunctionReturnType<typeof api.web.dashboardPage>;
     const statuses: { id: Status; label: string }[] = [
         { id: 'backlog', label: 'Pendiente' }, { id: 'todo', label: 'Por hacer' }, { id: 'in_progress', label: 'En curso' },
         { id: 'review', label: 'Revisión' }, { id: 'blocked', label: 'Bloqueado' }, { id: 'done', label: 'Hecho' },
     ];
     let client: ConvexHttpClient | null = null;
+    let reactiveClient: ConvexClient | null = null;
+    let stopDashboardSubscription: (() => void) | null = null;
     let authNode: HTMLDivElement;
     let authRoot: (() => void) | null = null;
     let authSignOut: (() => Promise<void>) | null = null;
@@ -27,8 +34,14 @@
     let lastAuthToken = '';
     let userEmail = 'Cuenta';
     let showProfile = false;
-    let timer: ReturnType<typeof setInterval>;
     let connected = false, busy = false, uploading = false;
+    let pagingSection: PageSection | null = null, pageError = '';
+    let taskSearchTimer: ReturnType<typeof setTimeout> | null = null, fileSearchTimer: ReturnType<typeof setTimeout> | null = null;
+    let taskSearchGeneration = 0, fileSearchGeneration = 0;
+    let taskSearchLoading = false, taskSearchDone = { title: true, description: true }, taskSearchCursors = { title: '', description: '' };
+    let fileSearchLoading = false, fileSearchDone = true, fileSearchCursor = '';
+    let pageCursors: Record<PageSection, string> = { projects: '', projectLinks: '', knowledge: '', tasks: '', agents: '', events: '', notes: '', images: '', files: '' };
+    let pageDone: Record<PageSection, boolean> = { projects: true, projectLinks: true, knowledge: true, tasks: true, agents: true, events: true, notes: true, images: true, files: true };
     let error = '', notice = '', lastSync: number | null = null;
     let projects: any[] = [], projectLinks: any[] = [], knowledge: any[] = [], tasks: any[] = [], agents: any[] = [], events: any[] = [], notes: any[] = [], images: any[] = [], files: any[] = [];
     let selectedProject: Id<'projects'> | '' = '', selectedNote = '';
@@ -41,19 +54,20 @@
     let remoteAgentDiagnostics: { label: string; status: DiagnosticStatus; detail: string }[] = [];
     let fileSearch = '', fileTagFilter = '', editingFileTagsId = '', fileTagDraft = '', previewFile: any = null, previewContent = '', previewLoading = false, previewError = '';
     let editingAgent: any = null, editAgentName = '', editAgentModel = '', editAgentProvider = '', editAgentClient = '';
-    let selectedTask: any = null, taskComments: any[] = [], taskComment = '', taskCommentKind = 'message';
+    let selectedTask: any = null, taskComments: any[] = [], taskCommentsCursor = '', taskCommentsDone = true, taskCommentsLoading = false, taskComment = '', taskCommentKind = 'message';
     let noteTitle = '', noteContent = '', noteProject: Id<'projects'> | '' = '', noteStatus: 'open' | 'attended' = 'open';
     let section: 'projects' | 'board' | 'notes' | 'images' | 'files' | 'activity' | 'agents' | 'graph' | 'secrets' = 'projects';
     let selectedGraphNode: any = null;
     let workspaceFileInput: HTMLInputElement;
-    $: visibleTasks = tasks.filter(t => (!selectedProject || t.projectId === selectedProject) && (taskStatusFilter === 'all' || t.status === taskStatusFilter) && (agentFilter === 'all' || t.assigneeAgentId === agentFilter || agentFilter === 'unassigned' && !t.assigneeAgentId) && (priorityFilter === 'all' || t.priority === priorityFilter) && (!search.trim() || `${t.title} ${t.description}`.toLowerCase().includes(search.trim().toLowerCase())));
+    $: visibleTasks = tasks.filter(t => (!selectedProject || t.projectId === selectedProject) && (taskStatusFilter === 'all' || t.status === taskStatusFilter) && (agentFilter === 'all' || t.assigneeAgentId === agentFilter || agentFilter === 'unassigned' && !t.assigneeAgentId) && (priorityFilter === 'all' || t.priority === priorityFilter));
     $: selectedProjectName = projects.find(p => p.id === selectedProject)?.name ?? 'Todos los proyectos';
     $: currentNote = notes.find(n => n.id === selectedNote);
     $: visibleFiles = files.filter(file =>
         (!selectedProject || file.projectId === selectedProject) &&
-        (!fileSearch.trim() || `${file.filename} ${(file.tags ?? []).join(' ')}`.toLowerCase().includes(fileSearch.trim().toLowerCase())) &&
         (!fileTagFilter.trim() || (file.tags ?? []).some((tag: string) => tag.toLowerCase().includes(fileTagFilter.trim().toLowerCase())))
     );
+    $: taskHasMore = search.trim() ? !taskSearchDone.title || !taskSearchDone.description : !pageDone.tasks;
+    $: fileHasMore = fileSearch.trim() ? !fileSearchDone : !pageDone.files;
     $: graphNodes = (() => {
         const visibleProjects = projects.filter(p => !selectedProject || p.id === selectedProject);
         const overviewRadius = Math.max(360, visibleProjects.length * 135);
@@ -102,14 +116,9 @@
             const refreshedToken = await fetchAuthToken?.({ forceRefreshToken: true }) ?? null;
             return refreshedToken && refreshedToken !== token ? send(refreshedToken) : response;
         } });
+        reactiveClient = new ConvexClient(PUBLIC_CONVEX_URL);
         authRoot = mountAuthBridge(authNode, PUBLIC_CONVEX_URL, (session) => handleSession(session));
-        const refreshWhenActive = () => {
-            if (lastAuthToken && document.visibilityState === 'visible' && navigator.onLine && !busy) void refresh(true);
-        };
-        timer = setInterval(refreshWhenActive, 300_000);
-        document.addEventListener('visibilitychange', refreshWhenActive);
-        window.addEventListener('online', refreshWhenActive);
-        return () => { clearInterval(timer); document.removeEventListener('visibilitychange', refreshWhenActive); window.removeEventListener('online', refreshWhenActive); authRoot?.(); };
+        return () => { if (taskSearchTimer) clearTimeout(taskSearchTimer); if (fileSearchTimer) clearTimeout(fileSearchTimer); stopDashboardSubscription?.(); void reactiveClient?.close(); authRoot?.(); };
     });
 
     async function handleSession(session: AuthSession) {
@@ -117,10 +126,15 @@
         fetchAuthToken = session.fetchAccessToken;
         if (!client) return;
         if (!session.token) {
-            lastAuthToken = ''; fetchAuthToken = null; client.clearAuth(); connected = false; clearData(); userEmail = 'Cuenta'; return;
+            lastAuthToken = ''; fetchAuthToken = null; client.clearAuth(); stopDashboardSubscription?.(); stopDashboardSubscription = null; connected = false; clearData(); userEmail = 'Cuenta'; return;
         }
         userEmail = session.email ?? 'Cuenta';
         client.setAuth(session.token);
+        reactiveClient?.setAuth(async ({ forceRefreshToken }) => {
+            const token = await fetchAuthToken?.({ forceRefreshToken }) ?? null;
+            if (token) client?.setAuth(token);
+            return token;
+        });
         if (lastAuthToken === session.token && connected) return;
         lastAuthToken = session.token;
         try {
@@ -134,18 +148,27 @@
                 migrationPending = true;
             }
             await refresh(true);
+            stopDashboardSubscription?.();
+            stopDashboardSubscription = reactiveClient?.onUpdate(api.web.dashboard, {}, (data) => {
+                applyDashboard(data, true);
+                connected = true;
+                lastSync = Date.now();
+            }, (subscriptionError) => {
+                connected = false;
+                error = `Falló la sincronización en vivo: ${message(subscriptionError)}`;
+            }) ?? null;
             if (migrationPending) notice = 'Sesión iniciada. La conexión con los datos anteriores está pendiente de actualizar en el servidor; tus datos no se borraron.';
         } catch (e) { connected = false; error = `No se autorizó el acceso al workspace: ${message(e)}`; }
     }
 
-    async function refresh(quiet = false) {
-        if (!client || busy) return;
-        busy = true; if (!quiet) { error = ''; notice = ''; }
+    async function refresh(quiet = false, afterMutation = false) {
+        if (!client || (busy && !afterMutation)) return;
+        const alreadyBusy = busy;
+        if (!alreadyBusy) busy = true;
+        if (!quiet) { error = ''; notice = ''; }
         try {
             const data: any = await client.query(api.web.dashboard, {});
-            projects = data.projects; projectLinks = data.projectLinks; knowledge = data.knowledge; tasks = data.tasks; agents = data.agents; events = data.events; notes = data.notes; images = data.images; files = data.files;
-            if (selectedProject && !projects.some(p => p.id === selectedProject)) selectedProject = '';
-            if (selectedNote && !notes.some(n => n.id === selectedNote)) selectedNote = '';
+            applyDashboard(data, afterMutation || Boolean(search.trim() || fileSearch.trim()));
             connected = true; lastSync = Date.now(); if (!quiet) notice = 'Workspace actualizado desde Convex.';
         } catch (e) {
             connected = false;
@@ -154,13 +177,149 @@
                 ? 'El servidor respondió “Not found”. Puede que la web y el backend estén en versiones distintas. Reintenta; si persiste, la sesión puede necesitar volver a iniciarse.'
                 : `Falló la actualización del workspace: ${detail}`;
         }
-        finally { busy = false; }
+        finally { if (!alreadyBusy) busy = false; }
     }
 
-    function clearData() { projects = []; projectLinks = []; knowledge = []; tasks = []; agents = []; events = []; notes = []; images = []; files = []; lastSync = null; selectedProject = ''; selectedNote = ''; selectedTask = null; taskComments = []; }
+    function applyDashboard(data: Dashboard, preservePages = false) {
+        const merge = <T extends { id: string }>(current: T[], incoming: T[]) => {
+            const latest = new Map(incoming.map(item => [item.id, item]));
+            return [...incoming, ...current.filter(item => !latest.has(item.id))];
+        };
+        projects = preservePages ? merge(projects, data.projects) : data.projects;
+        if (!preservePages || !search.trim()) tasks = preservePages ? merge(tasks, data.tasks) : data.tasks;
+        notes = preservePages ? merge(notes, data.notes) : data.notes;
+        images = preservePages ? merge(images, data.images) : data.images;
+        if (!preservePages || !fileSearch.trim()) files = preservePages ? merge(files, data.files) : data.files;
+        projectLinks = preservePages ? merge(projectLinks, data.projectLinks) : data.projectLinks;
+        knowledge = preservePages ? merge(knowledge, data.knowledge) : data.knowledge;
+        agents = preservePages ? merge(agents, data.agents) : data.agents;
+        events = preservePages ? merge(events, data.events) : data.events;
+        if (!preservePages) {
+            pageCursors = { ...data.pageCursors };
+            pageDone = { ...data.pageDone };
+        }
+        if (selectedProject && !projects.some(p => p.id === selectedProject)) selectedProject = '';
+        if (selectedNote && !notes.some(n => n.id === selectedNote)) selectedNote = '';
+    }
+
+    function appendUnique<T extends { id: string }>(current: T[], incoming: T[]) {
+        const seen = new Set(current.map(item => item.id));
+        return [...current, ...incoming.filter(item => !seen.has(item.id))];
+    }
+
+    function scheduleTaskSearch() {
+        if (taskSearchTimer) clearTimeout(taskSearchTimer);
+        const term = search.trim();
+        taskSearchGeneration++;
+        taskSearchLoading = Boolean(term);
+        tasks = [];
+        pageError = '';
+        if (!term) {
+            taskSearchDone = { title: true, description: true };
+            void refresh(true);
+            return;
+        }
+        taskSearchCursors = { title: '', description: '' };
+        taskSearchDone = { title: false, description: false };
+        taskSearchTimer = setTimeout(() => void loadTaskSearchPage(term, true, taskSearchGeneration), 280);
+    }
+
+    async function loadTaskSearchPage(term: string, firstPage: boolean, generation: number) {
+        if (!client) return;
+        taskSearchLoading = true;
+        try {
+            const [title, description] = await Promise.all([
+                client.query(api.web.buscarTareas, { text: term, field: 'title', paginationOpts: { numItems: 50, cursor: firstPage ? null : taskSearchCursors.title } }),
+                client.query(api.web.buscarTareas, { text: term, field: 'description', paginationOpts: { numItems: 50, cursor: firstPage ? null : taskSearchCursors.description } }),
+            ]);
+            if (generation !== taskSearchGeneration || term !== search.trim()) return;
+            const matches = appendUnique(title.items, description.items);
+            tasks = firstPage ? matches : appendUnique(tasks, matches);
+            taskSearchCursors = { title: title.continueCursor, description: description.continueCursor };
+            taskSearchDone = { title: title.isDone, description: description.isDone };
+            pageDone = { ...pageDone, tasks: title.isDone && description.isDone };
+        } catch (e) {
+            if (generation === taskSearchGeneration) pageError = `No se pudo buscar en las tareas: ${message(e)}`;
+        } finally {
+            if (generation === taskSearchGeneration) taskSearchLoading = false;
+        }
+    }
+
+    function scheduleFileSearch() {
+        if (fileSearchTimer) clearTimeout(fileSearchTimer);
+        const term = fileSearch.trim();
+        fileSearchGeneration++;
+        fileSearchLoading = Boolean(term);
+        files = [];
+        pageError = '';
+        if (!term) {
+            fileSearchDone = true;
+            void refresh(true);
+            return;
+        }
+        fileSearchCursor = '';
+        fileSearchDone = false;
+        fileSearchTimer = setTimeout(() => void loadFileSearchPage(term, true, fileSearchGeneration), 280);
+    }
+
+    async function loadFileSearchPage(term: string, firstPage: boolean, generation: number) {
+        if (!client) return;
+        fileSearchLoading = true;
+        try {
+            const result = await client.query(api.web.buscarArchivos, {
+                text: term,
+                paginationOpts: { numItems: 100, cursor: firstPage ? null : fileSearchCursor },
+            });
+            if (generation !== fileSearchGeneration || term !== fileSearch.trim()) return;
+            files = firstPage ? result.items : appendUnique(files, result.items);
+            fileSearchCursor = result.continueCursor;
+            fileSearchDone = result.isDone;
+            pageDone = { ...pageDone, files: fileSearchDone };
+        } catch (e) {
+            if (generation === fileSearchGeneration) pageError = `No se pudo buscar en los archivos: ${message(e)}`;
+        } finally {
+            if (generation === fileSearchGeneration) fileSearchLoading = false;
+        }
+    }
+
+    async function loadMore(section: PageSection) {
+        const searchDone = section === 'tasks' && search.trim() ? taskSearchDone.title && taskSearchDone.description : section === 'files' && fileSearch.trim() ? fileSearchDone : pageDone[section];
+        if (!client || searchDone || pagingSection) return;
+        pagingSection = section; pageError = '';
+        try {
+            if (section === 'tasks' && search.trim()) {
+                await loadTaskSearchPage(search.trim(), false, taskSearchGeneration);
+                return;
+            }
+            if (section === 'files' && fileSearch.trim()) {
+                await loadFileSearchPage(fileSearch.trim(), false, fileSearchGeneration);
+                return;
+            }
+            let page: DashboardPage;
+            let emptyPages = 0;
+            do {
+                page = await client.query(api.web.dashboardPage, { section, paginationOpts: { numItems: 100, cursor: pageCursors[section] } });
+                pageCursors = { ...pageCursors, [section]: page.continueCursor };
+                pageDone = { ...pageDone, [section]: page.isDone };
+                emptyPages++;
+            } while (section === 'notes' && !page.items.length && !page.isDone && emptyPages < 5);
+            if (section === 'projects') projects = appendUnique(projects, page.items as Dashboard['projects']);
+            if (section === 'projectLinks') projectLinks = appendUnique(projectLinks, page.items as Dashboard['projectLinks']);
+            if (section === 'knowledge') knowledge = appendUnique(knowledge, page.items as Dashboard['knowledge']);
+            if (section === 'tasks') tasks = appendUnique(tasks, page.items as Dashboard['tasks']);
+            if (section === 'agents') agents = appendUnique(agents, page.items as Dashboard['agents']);
+            if (section === 'events') events = appendUnique(events, page.items as Dashboard['events']);
+            if (section === 'notes') notes = appendUnique(notes, page.items as Dashboard['notes']);
+            if (section === 'images') images = appendUnique(images, page.items as Dashboard['images']);
+            if (section === 'files') files = appendUnique(files, page.items as Dashboard['files']);
+        } catch (e) { pageError = `No se pudo cargar la página siguiente: ${message(e)}`; }
+        finally { pagingSection = null; }
+    }
+
+    function clearData() { taskSearchGeneration++; fileSearchGeneration++; if (taskSearchTimer) clearTimeout(taskSearchTimer); if (fileSearchTimer) clearTimeout(fileSearchTimer); taskSearchLoading = false; fileSearchLoading = false; taskSearchDone = { title: true, description: true }; fileSearchDone = true; search = ''; fileSearch = ''; fileTagFilter = ''; projects = []; projectLinks = []; knowledge = []; tasks = []; agents = []; events = []; notes = []; images = []; files = []; pageCursors = { projects: '', projectLinks: '', knowledge: '', tasks: '', agents: '', events: '', notes: '', images: '', files: '' }; pageDone = { projects: true, projectLinks: true, knowledge: true, tasks: true, agents: true, events: true, notes: true, images: true, files: true }; lastSync = null; selectedProject = ''; selectedNote = ''; selectedTask = null; taskComments = []; taskCommentsCursor = ''; taskCommentsDone = true; }
     async function createProject() {
         if (!client || !newProjectName.trim()) return; busy = true;
-        try { const p: any = await client.mutation(api.web.crearProyecto, { name: newProjectName.trim(), description: newProjectDescription.trim() }); newProjectName = ''; newProjectDescription = ''; selectedProject = p.id; await refresh(true); notice = 'Proyecto creado.'; }
+        try { const p: any = await client.mutation(api.web.crearProyecto, { name: newProjectName.trim(), description: newProjectDescription.trim() }); newProjectName = ''; newProjectDescription = ''; selectedProject = p.id; await refresh(true, true); notice = 'Proyecto creado.'; }
         catch (e) { error = `No se pudo crear el proyecto: ${message(e)}`; } finally { busy = false; }
     }
     function startProjectEdit(project: any) { editingProject = project.id; editProjectName = project.name; editProjectDescription = project.description; }
@@ -294,7 +453,7 @@
     }
     async function createTask() {
         if (!client || !selectedProject || !newTaskTitle.trim()) return; busy = true;
-        try { await client.mutation(api.web.crearTarea, { projectId: selectedProject, title: newTaskTitle.trim(), description: newTaskDescription.trim() }); newTaskTitle = ''; newTaskDescription = ''; await refresh(true); notice = 'Tarea agregada.'; }
+        try { await client.mutation(api.web.crearTarea, { projectId: selectedProject, title: newTaskTitle.trim(), description: newTaskDescription.trim() }); newTaskTitle = ''; newTaskDescription = ''; await refresh(true, true); notice = 'Tarea agregada.'; }
         catch (e) { error = `No se pudo agregar la tarea: ${message(e)}`; } finally { busy = false; }
     }
     async function moveTask(task: any, next: Status) {
@@ -311,8 +470,20 @@
     async function openTask(task: any) {
         if (!client) return;
         selectedTask = { ...task }; taskComments = []; taskComment = '';
-        try { taskComments = await client.query(api.web.comentariosTarea, { taskId: task.id }); }
+        try {
+            const page = await client.query(api.web.comentariosTarea, { taskId: task.id, paginationOpts: { numItems: 100, cursor: null } });
+            taskComments = page.items.reverse(); taskCommentsCursor = page.continueCursor; taskCommentsDone = page.isDone;
+        }
         catch (e) { error = `No se pudo cargar la conversación: ${message(e)}`; }
+    }
+    async function loadMoreTaskComments() {
+        if (!client || !selectedTask || taskCommentsDone || taskCommentsLoading) return;
+        taskCommentsLoading = true;
+        try {
+            const page = await client.query(api.web.comentariosTarea, { taskId: selectedTask.id, paginationOpts: { numItems: 100, cursor: taskCommentsCursor } });
+            taskComments = [...page.items.reverse(), ...taskComments]; taskCommentsCursor = page.continueCursor; taskCommentsDone = page.isDone;
+        } catch (e) { error = `No se pudieron cargar más comentarios: ${message(e)}`; }
+        finally { taskCommentsLoading = false; }
     }
     async function saveTaskDetails() {
         if (!client || !selectedTask) return; busy = true;
@@ -323,13 +494,18 @@
     }
     async function addTaskComment() {
         if (!client || !selectedTask || !taskComment.trim()) return; busy = true;
-        try { await client.mutation(api.web.crearComentarioTarea, { taskId: selectedTask.id, kind: taskCommentKind as any, content: taskComment.trim() }); taskComments = await client.query(api.web.comentariosTarea, { taskId: selectedTask.id }); taskComment = ''; await refresh(true); }
+        try {
+            await client.mutation(api.web.crearComentarioTarea, { taskId: selectedTask.id, kind: taskCommentKind as any, content: taskComment.trim() });
+            const page = await client.query(api.web.comentariosTarea, { taskId: selectedTask.id, paginationOpts: { numItems: 100, cursor: null } });
+            taskComments = page.items.reverse(); taskCommentsCursor = page.continueCursor; taskCommentsDone = page.isDone; taskComment = '';
+            await refresh(true, true);
+        }
         catch (e) { error = `No se pudo añadir el comentario: ${message(e)}`; } finally { busy = false; }
     }
     function beginAgentEdit(agent: any) { editingAgent = agent; editAgentName = agent.name; editAgentModel = agent.model; editAgentProvider = agent.modelProvider; editAgentClient = agent.clientType; }
     async function saveAgentEdit() {
         if (!client || !editingAgent) return; busy = true;
-        try { await client.mutation(api.web.editarAgente, { agentId: editingAgent.id, name: editAgentName, model: editAgentModel || 'auto', modelProvider: editAgentProvider || 'auto', clientType: editAgentClient }); editingAgent = null; await refresh(true); notice = 'Agente actualizado.'; }
+        try { await client.mutation(api.web.editarAgente, { agentId: editingAgent.id, name: editAgentName, model: editAgentModel || 'auto', modelProvider: editAgentProvider || 'auto', clientType: editAgentClient }); editingAgent = null; await refresh(true, true); notice = 'Agente actualizado.'; }
         catch (e) { error = `No se pudo editar el agente: ${message(e)}`; } finally { busy = false; }
     }
     function chooseNote(note?: any) { selectedNote = note?.id ?? ''; noteTitle = note?.title ?? ''; noteContent = note?.content ?? ''; noteProject = note?.projectId ?? ''; noteStatus = note?.status ?? 'open'; }
@@ -346,7 +522,7 @@
     }
     async function saveNote() {
         if (!client) return; busy = true;
-        try { const id = await client.mutation(api.web.guardarNota, { id: selectedNote || undefined, title: noteTitle, content: noteContent, projectId: noteProject || null, status: noteStatus }); selectedNote = id; await refresh(true); notice = 'Nota guardada en Convex.'; }
+        try { const id = await client.mutation(api.web.guardarNota, { id: selectedNote || undefined, title: noteTitle, content: noteContent, projectId: noteProject || null, status: noteStatus }); selectedNote = id; await refresh(true, true); notice = 'Nota guardada en Convex.'; }
         catch (e) { error = `No se pudo guardar la nota: ${message(e)}`; } finally { busy = false; }
     }
     async function uploadImage(file?: File, noteId?: string) {
@@ -448,27 +624,27 @@
             <div class="sidebar-bottom"><button class="sidebar-user" on:click={() => void openProfile()}><span class="pilot-avatar">{userEmail.slice(0, 1).toUpperCase()}</span><span class="pilot-text"><strong>{userEmail}</strong><small>Mi perfil</small></span></button><span class="cloud-indicator" class:cloud-on={connected} title={connected ? 'Sincronizado con Convex' : 'Sin conexión'}>●</span></div>
         </aside>
         <div class="main-area">
-            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'files' ? 'Archivos' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'secrets' ? 'Claves privadas' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? '● Conectado · 5 min' : '○ Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
+            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'files' ? 'Archivos' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'secrets' ? 'Claves privadas' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? '● Sincronizado en vivo' : '○ Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
             {#if error}<div class="alert error">{error}</div>{/if}{#if notice}<div class="alert notice">{notice}</div>{/if}
             <section class="dashboard">
         {#if !connected}<div class="reconnect-banner"><strong>Workspace sin actualizar</strong><span>Conservamos esta vista y volveremos a intentarlo automáticamente.</span><button on:click={() => void refresh()} disabled={busy}>{busy ? 'Conectando…' : 'Reintentar ahora'}</button></div>{/if}<div class="intro"><div><div class="eyebrow">SUPERVISIÓN DEL WORKSPACE</div><h1>Proyectos y agentes, de un vistazo</h1><p>Monitorea cambios, notas y archivos desde Convex.</p></div><div class="last-sync"><span>Última consulta</span><strong>{lastSync ? date(lastSync) : 'Conectando…'}</strong><small>{projects.length} proyectos · {tasks.length} tareas · {agents.length} agentes</small></div></div>
         {#if section === 'board'}
             <div class="summary-grid"><article><span>Proyectos</span><strong>{projects.length}</strong><small>{projects.filter(p => p.status === 'active').length} activos</small></article><article><span>Tareas abiertas</span><strong>{tasks.filter(t => t.status !== 'done').length}</strong><small>{tasks.filter(t => t.status === 'blocked').length} bloqueadas</small></article><article><span>Agentes</span><strong>{agents.length}</strong><small>{agents.filter(a => a.active).length} activos</small></article><article><span>Actividad</span><strong>{events.length}</strong><small>eventos recientes</small></article></div>
             <div class="workspace-grid"><section class="work-panel"><div class="panel-head"><div><div class="eyebrow">SEGUIMIENTO</div><h2>{selectedProjectName}</h2></div><select aria-label="Filtrar por proyecto" bind:value={selectedProject}><option value="">Todos los proyectos</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div>
-                <div class="filters"><select aria-label="Filtrar por estado" bind:value={taskStatusFilter}><option value="all">Todos los estados</option>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><select aria-label="Filtrar por agente" bind:value={agentFilter}><option value="all">Todos los agentes</option><option value="unassigned">Sin asignar</option>{#each agents as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select><select aria-label="Filtrar por prioridad" bind:value={priorityFilter}><option value="all">Todas las prioridades</option>{#each ['urgent','high','medium','low'] as p}<option value={p}>{p}</option>{/each}</select><input bind:value={search} placeholder="Buscar tareas…" aria-label="Buscar tareas" /></div>
+                <div class="filters"><select aria-label="Filtrar por estado" bind:value={taskStatusFilter}><option value="all">Todos los estados</option>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><select aria-label="Filtrar por agente" bind:value={agentFilter}><option value="all">Todos los agentes</option><option value="unassigned">Sin asignar</option>{#each agents as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select><select aria-label="Filtrar por prioridad" bind:value={priorityFilter}><option value="all">Todas las prioridades</option>{#each ['urgent','high','medium','low'] as p}<option value={p}>{p}</option>{/each}</select><input bind:value={search} on:input={scheduleTaskSearch} placeholder="Buscar tareas en todo el workspace…" aria-label="Buscar tareas en todo el workspace" /></div>
                 {#if selectedProject}<form class="task-create" on:submit|preventDefault={createTask}><input bind:value={newTaskTitle} placeholder="Nueva tarea…" required /><input bind:value={newTaskDescription} placeholder="Descripción opcional" /><button disabled={busy}>＋ Agregar tarea</button></form>{/if}
                 <div class="task-drop-targets" aria-label="Mover tarea arrastrándola a un estado">{#each [{id:'todo',label:'Pendiente'},{id:'in_progress',label:'En curso'},{id:'done',label:'Hecho'}] as lane}<button type="button" on:dragover={(event) => event.preventDefault()} on:drop={(event) => dropTask(lane.id as Status,event)}><span>{lane.label}</span></button>{/each}</div>
-                {#if visibleTasks.length}<div class="task-list">{#each visibleTasks as t (t.id)}<article class="task" draggable="true" on:dragstart={(event) => event.dataTransfer?.setData('text/plain', t.id)}><div class="task-main"><span class="priority" class:urgent={t.priority === 'urgent'}></span><div><strong>{t.title}</strong><p>{t.description || 'Sin descripción'}</p><small>{projects.find(p => p.id === t.projectId)?.name ?? 'Proyecto'} · {t.assigneeAgentId ? agents.find(a => a.id === t.assigneeAgentId)?.name ?? 'Agente' : t.createdByType === 'agent' ? 'Creada por agente' : 'Sin asignar'}</small></div></div><div class="task-actions"><select aria-label={`Estado de ${t.title}`} value={t.status} on:change={e => void moveTask(t, (e.currentTarget as HTMLSelectElement).value as Status)}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><button class="task-open" on:click={() => void openTask(t)}>Detalles</button></div></article>{/each}</div>{:else}<div class="empty">No hay tareas con estos filtros.</div>{/if}
+                {#if visibleTasks.length}<div class="task-list">{#each visibleTasks as t (t.id)}<article class="task" draggable="true" on:dragstart={(event) => event.dataTransfer?.setData('text/plain', t.id)}><div class="task-main"><span class="priority" class:urgent={t.priority === 'urgent'}></span><div><strong>{t.title}</strong><p>{t.description || 'Sin descripción'}</p><small>{projects.find(p => p.id === t.projectId)?.name ?? 'Proyecto'} · {t.assigneeAgentId ? agents.find(a => a.id === t.assigneeAgentId)?.name ?? 'Agente' : t.createdByType === 'agent' ? 'Creada por agente' : 'Sin asignar'}</small></div></div><div class="task-actions"><select aria-label={`Estado de ${t.title}`} value={t.status} on:change={e => void moveTask(t, (e.currentTarget as HTMLSelectElement).value as Status)}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><button class="task-open" on:click={() => void openTask(t)}>Detalles</button></div></article>{/each}</div>{:else if taskSearchLoading}<div class="empty">Buscando en las tareas del workspace…</div>{:else}<div class="empty">No hay tareas con estos filtros.</div>{/if}{#if taskHasMore}<PaginationFooter label="tareas" help={search.trim() ? "Resultados encontrados en el workspace; carga más para continuar." : "Continúa para cargar más tareas."} count={tasks.length} loading={taskSearchLoading || pagingSection === "tasks"} error={pageError} onLoadMore={() => void loadMore("tasks")} />{/if}
                 <form class="create-project" on:submit|preventDefault={createProject}><strong>＋ Nuevo proyecto</strong><input bind:value={newProjectName} placeholder="Nombre" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>Crear</button></form>
             </section><aside class="side-column"><section class="side-panel"><div class="eyebrow">AGENTES</div><h2>Equipo de trabajo</h2>{#each agents as a (a.id)}<div class="agent"><span class:online={a.active}></span><div><strong>{a.name}</strong><small>{a.model || a.clientType} · {a.active ? 'Activo' : 'Inactivo'}</small></div>{#if a.lastSeenAt}<time>{date(a.lastSeenAt)}</time>{/if}</div>{/each}{#if !agents.length}<p class="empty-small">Aún no hay agentes registrados.</p>{/if}</section><section class="side-panel"><div class="eyebrow">ACTIVIDAD</div><h2>Últimos movimientos</h2><select class="activity-filter" aria-label="Filtrar actividad" bind:value={activityFilter}><option value="all">Todos</option><option value="agent">Agentes</option><option value="human">Personas</option></select><div class="events">{#each events.filter(e => activityFilter === 'all' || e.actorType === activityFilter).slice(0, 12) as e (e.id)}<article><i class:agent-event={e.actorType === 'agent'}></i><div><strong>{e.summary}</strong><small>{e.actorType === 'agent' ? `Agente ${e.actorId}` : 'Piloto'} · {date(e.createdAt)}</small></div></article>{/each}</div></section></aside></div>
-        {:else if section === 'projects'}<section class="work-panel project-library"><div class="panel-head"><div><div class="eyebrow">ESPACIOS DE TRABAJO</div><h2>Proyectos</h2></div><span>{projects.length} en tu workspace</span></div><form class="create-project" on:submit|preventDefault={createProject}><input bind:value={newProjectName} placeholder="Nombre del proyecto" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>＋ Crear proyecto</button></form><div class="project-grid">{#each projects as p (p.id)}<article class="project-card" class:selected={selectedProject === p.id}><button class="project-open" on:click={() => { selectedProject = p.id; section = 'board'; }}><span class="project-status" class:archived={p.status === 'archived'}>{p.status === 'active' ? 'Activo' : 'Archivado'}</span><strong>{p.name}</strong><p>{p.description || 'Sin descripción'}</p><small>{tasks.filter(t => t.projectId === p.id).length} tareas · {knowledge.filter(k => k.projectId === p.id).length} elementos de contexto</small></button><div class="project-card-actions"><button class="project-edit-button" on:click={() => startProjectEdit(p)}>Editar</button><button class="project-delete-button" on:click={() => void deleteProject(p)} disabled={busy}>Eliminar</button></div></article>{/each}{#if !projects.length}<div class="empty">Crea tu primer proyecto para empezar.</div>{/if}</div>{#if editingProject}<form class="project-edit-form" on:submit|preventDefault={saveProjectEdit}><div class="eyebrow">EDITAR PROYECTO</div><input bind:value={editProjectName} placeholder="Nombre" required /><textarea bind:value={editProjectDescription} placeholder="Descripción" rows="3"></textarea><div><button class="primary" disabled={busy}>Guardar cambios</button><button type="button" class="subtle-button" on:click={() => editingProject = ''}>Cancelar</button></div></form>{/if}<section class="project-relations"><div class="eyebrow">CONEXIONES</div><h3>Relaciones entre proyectos</h3><form class="relation-form" on:submit|preventDefault={createProjectRelation}><select aria-label="Proyecto de origen" bind:value={relationSource}><option value="">Desde…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Proyecto relacionado" bind:value={relationTarget}><option value="">Hacia…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><input bind:value={relationDescription} placeholder="Qué los relaciona" /><button disabled={!relationSource || !relationTarget || relationSource === relationTarget}>Vincular</button></form>{#each projectLinks as link (link.id)}<div class="relation-row"><span>{projects.find(p => p.id === link.sourceProjectId)?.name ?? 'Proyecto'} ↔ {projects.find(p => p.id === link.targetProjectId)?.name ?? 'Proyecto'}</span><small>{link.description || link.relationType}</small><button on:click={() => void deleteProjectRelation(link)} aria-label="Quitar relación">×</button></div>{/each}</section></section>
-        {:else if section === 'notes'}<div class="content-grid"><section class="side-panel note-list"><div class="eyebrow">MEMORIA</div><h2>Notas conservadas</h2>{#each notes as n (n.id)}<div class="note-row-wrap"><button class="note-row" class:selected={selectedNote === n.id} on:click={() => chooseNote(n)}><strong>{n.title || 'Sin título'}</strong><small>{n.status === 'attended' ? 'Atendida' : 'Abierta'} · {projects.find(p => p.id === n.projectId)?.name ?? 'Sin proyecto'}</small></button><button class="note-delete" aria-label={`Eliminar nota ${n.title || 'sin título'}`} title="Eliminar nota" on:click={() => void deleteNote(n)} disabled={busy}>×</button></div>{/each}<button class="new-note" on:click={() => chooseNote()}>＋ Nueva nota</button></section><section class="work-panel note-editor"><div class="eyebrow">{selectedNote ? 'EDITAR NOTA' : 'NUEVA NOTA'}</div><input class="note-title" bind:value={noteTitle} placeholder="Título" /><div class="note-meta"><select aria-label="Proyecto asociado" bind:value={noteProject}><option value="">Sin proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Estado de nota" bind:value={noteStatus}><option value="open">Abierta</option><option value="attended">Atendida</option></select></div><textarea bind:value={noteContent} placeholder="Escribe contexto útil para ti y tus agentes…"></textarea><button class="primary" on:click={() => void saveNote()} disabled={busy}>Guardar nota</button>{#if selectedNote}<label class="upload note-upload">＋ Adjuntar imagen<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0], selectedNote)} /></label><div class="note-attachments">{#each images.filter(image => image.noteId === selectedNote) as image (image.id)}<figure><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><figcaption>{image.filename}<button on:click={() => void deleteImage(image)} aria-label={`Eliminar ${image.filename}`}>×</button></figcaption></figure>{/each}</div>{/if}</section></div>
-        {:else if section === 'images'}<section class="work-panel image-library"><div class="panel-head"><div><div class="eyebrow">ARCHIVOS DEL PROYECTO</div><h2>Imágenes</h2></div><select aria-label="Proyecto para imágenes" bind:value={selectedProject}><option value="">Elige un proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p>Las imágenes se guardan en Convex Storage y quedan vinculadas al proyecto seleccionado. Límite: 10 MB por archivo.</p><label class="upload">{uploading ? 'Subiendo…' : '＋ Subir imagen'}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={!selectedProject || uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0])} /></label><div class="image-grid">{#each images.filter(i => !selectedProject || i.projectId === selectedProject) as image (image.id)}<article><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><div><strong>{image.filename}</strong><small>{projects.find(p => p.id === image.projectId)?.name ?? 'Proyecto'} · {(image.size / 1024).toFixed(0)} KB</small><button on:click={() => void deleteImage(image)}>Quitar</button></div></article>{/each}</div>{#if !images.length}<div class="empty">Todavía no hay imágenes.</div>{/if}</section>
+        {:else if section === 'projects'}<section class="work-panel project-library"><div class="panel-head"><div><div class="eyebrow">ESPACIOS DE TRABAJO</div><h2>Proyectos</h2></div><span>{projects.length} cargados</span></div><form class="create-project" on:submit|preventDefault={createProject}><input bind:value={newProjectName} placeholder="Nombre del proyecto" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>＋ Crear proyecto</button></form><div class="project-grid">{#each projects as p (p.id)}<article class="project-card" class:selected={selectedProject === p.id}><button class="project-open" on:click={() => { selectedProject = p.id; section = 'board'; }}><span class="project-status" class:archived={p.status === 'archived'}>{p.status === 'active' ? 'Activo' : 'Archivado'}</span><strong>{p.name}</strong><p>{p.description || 'Sin descripción'}</p><small>{tasks.filter(t => t.projectId === p.id).length} tareas · {knowledge.filter(k => k.projectId === p.id).length} elementos de contexto</small></button><div class="project-card-actions"><button class="project-edit-button" on:click={() => startProjectEdit(p)}>Editar</button><button class="project-delete-button" on:click={() => void deleteProject(p)} disabled={busy}>Eliminar</button></div></article>{/each}{#if !projects.length}<div class="empty">Crea tu primer proyecto para empezar.</div>{/if}</div>{#if !pageDone.projects}<PaginationFooter label="proyectos" count={projects.length} loading={pagingSection === "projects"} error={pageError} onLoadMore={() => void loadMore("projects")} />{/if}{#if editingProject}<form class="project-edit-form" on:submit|preventDefault={saveProjectEdit}><div class="eyebrow">EDITAR PROYECTO</div><input bind:value={editProjectName} placeholder="Nombre" required /><textarea bind:value={editProjectDescription} placeholder="Descripción" rows="3"></textarea><div><button class="primary" disabled={busy}>Guardar cambios</button><button type="button" class="subtle-button" on:click={() => editingProject = ''}>Cancelar</button></div></form>{/if}<section class="project-relations"><div class="eyebrow">CONEXIONES</div><h3>Relaciones entre proyectos</h3><form class="relation-form" on:submit|preventDefault={createProjectRelation}><select aria-label="Proyecto de origen" bind:value={relationSource}><option value="">Desde…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Proyecto relacionado" bind:value={relationTarget}><option value="">Hacia…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><input bind:value={relationDescription} placeholder="Qué los relaciona" /><button disabled={!relationSource || !relationTarget || relationSource === relationTarget}>Vincular</button></form>{#each projectLinks as link (link.id)}<div class="relation-row"><span>{projects.find(p => p.id === link.sourceProjectId)?.name ?? 'Proyecto'} ↔ {projects.find(p => p.id === link.targetProjectId)?.name ?? 'Proyecto'}</span><small>{link.description || link.relationType}</small><button on:click={() => void deleteProjectRelation(link)} aria-label="Quitar relación">×</button></div>{/each}{#if !pageDone.projectLinks}<PaginationFooter label="relaciones" count={projectLinks.length} loading={pagingSection === "projectLinks"} error={pageError} onLoadMore={() => void loadMore("projectLinks")} />{/if}</section></section>
+        {:else if section === 'notes'}<div class="content-grid"><section class="side-panel note-list"><div class="eyebrow">MEMORIA</div><h2>Notas conservadas</h2>{#each notes as n (n.id)}<div class="note-row-wrap"><button class="note-row" class:selected={selectedNote === n.id} on:click={() => chooseNote(n)}><strong>{n.title || 'Sin título'}</strong><small>{n.status === 'attended' ? 'Atendida' : 'Abierta'} · {projects.find(p => p.id === n.projectId)?.name ?? 'Sin proyecto'}</small></button><button class="note-delete" aria-label={`Eliminar nota ${n.title || 'sin título'}`} title="Eliminar nota" on:click={() => void deleteNote(n)} disabled={busy}>×</button></div>{/each}{#if !pageDone.notes}<PaginationFooter label="notas" count={notes.length} loading={pagingSection === "notes"} error={pageError} onLoadMore={() => void loadMore("notes")} />{/if}<button class="new-note" on:click={() => chooseNote()}>＋ Nueva nota</button></section><section class="work-panel note-editor"><div class="eyebrow">{selectedNote ? 'EDITAR NOTA' : 'NUEVA NOTA'}</div><input class="note-title" bind:value={noteTitle} placeholder="Título" /><div class="note-meta"><select aria-label="Proyecto asociado" bind:value={noteProject}><option value="">Sin proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Estado de nota" bind:value={noteStatus}><option value="open">Abierta</option><option value="attended">Atendida</option></select></div><textarea bind:value={noteContent} placeholder="Escribe contexto útil para ti y tus agentes…"></textarea><button class="primary" on:click={() => void saveNote()} disabled={busy}>Guardar nota</button>{#if selectedNote}<label class="upload note-upload">＋ Adjuntar imagen<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0], selectedNote)} /></label><div class="note-attachments">{#each images.filter(image => image.noteId === selectedNote) as image (image.id)}<figure><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><figcaption>{image.filename}<button on:click={() => void deleteImage(image)} aria-label={`Eliminar ${image.filename}`}>×</button></figcaption></figure>{/each}</div>{/if}</section></div>
+        {:else if section === 'images'}<section class="work-panel image-library"><div class="panel-head"><div><div class="eyebrow">ARCHIVOS DEL PROYECTO</div><h2>Imágenes</h2></div><select aria-label="Proyecto para imágenes" bind:value={selectedProject}><option value="">Elige un proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p>Las imágenes se guardan en Convex Storage y quedan vinculadas al proyecto seleccionado. Límite: 10 MB por archivo.</p><label class="upload">{uploading ? 'Subiendo…' : '＋ Subir imagen'}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={!selectedProject || uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0])} /></label><div class="image-grid">{#each images.filter(i => !selectedProject || i.projectId === selectedProject) as image (image.id)}<article><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><div><strong>{image.filename}</strong><small>{projects.find(p => p.id === image.projectId)?.name ?? 'Proyecto'} · {(image.size / 1024).toFixed(0)} KB</small><button on:click={() => void deleteImage(image)}>Quitar</button></div></article>{/each}</div>{#if !images.length}<div class="empty">Todavía no hay imágenes.</div>{/if}{#if !pageDone.images}<PaginationFooter label="imágenes" count={images.length} loading={pagingSection === "images"} error={pageError} onLoadMore={() => void loadMore("images")} />{/if}</section>
         {:else if section === 'files'}
             <section class="work-panel image-library">
                 <div class="panel-head"><div><div class="eyebrow">BIBLIOTECA DEL WORKSPACE</div><h2>Archivos</h2></div><select aria-label="Filtrar archivos por proyecto" bind:value={selectedProject}><option value="">Todo el workspace</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div>
                 <p>Sube PDF, documentos, hojas de cálculo, presentaciones, CSV o texto. Hasta 25 MB por archivo y 1 GB por workspace.</p>
-                <div class="file-search-row"><input bind:value={fileSearch} aria-label="Buscar archivos" placeholder="Buscar por nombre o etiqueta…" /><input bind:value={fileTagFilter} aria-label="Filtrar por etiqueta" placeholder="Filtrar etiqueta…" /></div>
+                <div class="file-search-row"><input bind:value={fileSearch} on:input={scheduleFileSearch} aria-label="Buscar archivos en todo el workspace" placeholder="Buscar archivos por nombre…" /><input bind:value={fileTagFilter} aria-label="Filtrar por etiqueta en los archivos cargados" placeholder="Filtrar etiquetas cargadas…" /></div>
                 <label class="upload">{uploading ? 'Subiendo…' : '＋ Subir archivo'}<input bind:this={workspaceFileInput} type="file" accept=".pdf,.txt,.md,.markdown,.csv,.json,.rtf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.zip" disabled={uploading} on:change={e => void uploadWorkspaceFile((e.currentTarget as HTMLInputElement).files?.[0])} /></label>
                 <div class="file-list">
                     {#each visibleFiles as file (file.id)}
@@ -485,17 +661,17 @@
                         </article>
                     {/each}
                 </div>
-                {#if !visibleFiles.length}<div class="empty">No hay archivos que coincidan con la búsqueda y los filtros.</div>{/if}
+                {#if !visibleFiles.length}<div class="empty">{fileSearchLoading ? "Buscando archivos en el workspace…" : "No hay archivos que coincidan con la búsqueda y los filtros."}</div>{/if}{#if fileHasMore}<PaginationFooter label="archivos" help={fileSearch.trim() ? "Coincidencias por nombre en todo el workspace." : "Los filtros de etiqueta se aplican a los archivos cargados."} count={files.length} loading={fileSearchLoading || pagingSection === "files"} error={pageError} onLoadMore={() => void loadMore("files")} />{/if}
             </section>
-        {:else if section === 'activity'}<section class="work-panel"><div class="panel-head"><div><div class="eyebrow">HISTORIAL</div><h2>Actividad reciente</h2></div><select class="activity-filter" aria-label="Filtrar actividad" bind:value={activityFilter}><option value="all">Todas</option><option value="agent">Agentes</option><option value="human">Personas</option></select></div><div class="events">{#each events.filter(e => activityFilter === 'all' || e.actorType === activityFilter) as e (e.id)}<article><i class:agent-event={e.actorType === 'agent'}></i><div><strong>{e.summary}</strong><small>{e.actorType === 'agent' ? `Agente ${e.actorId}` : 'Persona'} · {date(e.createdAt)}</small></div></article>{/each}{#if !events.length}<div class="empty">Aún no hay actividad registrada.</div>{/if}</div></section>
+        {:else if section === 'activity'}<section class="work-panel"><div class="panel-head"><div><div class="eyebrow">HISTORIAL</div><h2>Actividad reciente</h2></div><select class="activity-filter" aria-label="Filtrar actividad" bind:value={activityFilter}><option value="all">Todas</option><option value="agent">Agentes</option><option value="human">Personas</option></select></div><div class="events">{#each events.filter(e => activityFilter === 'all' || e.actorType === activityFilter) as e (e.id)}<article><i class:agent-event={e.actorType === 'agent'}></i><div><strong>{e.summary}</strong><small>{e.actorType === 'agent' ? `Agente ${e.actorId}` : 'Persona'} · {date(e.createdAt)}</small></div></article>{/each}{#if !events.length}<div class="empty">Aún no hay actividad registrada.</div>{/if}</div>{#if !pageDone.events}<PaginationFooter label="eventos" count={events.length} loading={pagingSection === "events"} error={pageError} onLoadMore={() => void loadMore("events")} />{/if}</section>
         {:else if section === 'secrets'}{#if client}<PrivateVault {client} />{/if}
-        {:else if section === 'agents'}<section class="work-panel"><div class="eyebrow">EQUIPO Y CONEXIONES</div><h2>Conecta tu agente en un momento</h2><p class="graph-hint">Elige Codex, crea una credencial y copia una configuración lista para pegar. Después probamos la conexión real con el servidor MCP y una lectura de tus proyectos.</p><div class="agent-connect-guide"><span class="guide-step">01</span><div><strong>Elige tu cliente</strong><p>La guía se adapta a Codex, OpenCode y otros clientes MCP.</p></div><span class="guide-step">02</span><div><strong>Crea una clave exclusiva</strong><p>Puedes revocarla cuando quieras; Mitpad conserva solo su hash.</p></div><span class="guide-step">03</span><div><strong>Prueba antes de usar</strong><p>Confirmamos el saludo MCP, la lista de herramientas y una lectura real.</p></div></div><form class="remote-agent-form" on:submit|preventDefault={createRemoteAgent}><label>Cliente<select bind:value={remoteAgentClient}><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="cursor">Cursor</option><option value="mcp">Otro cliente MCP</option></select></label><label>Nombre del agente<input bind:value={remoteAgentName} maxlength="100" required placeholder="Codex personal" /></label><label>Modelo<input bind:value={remoteAgentModel} maxlength="120" placeholder="auto" /></label><label>Proveedor<input bind:value={remoteAgentProvider} maxlength="80" placeholder="auto" /></label><button disabled={busy}>Crear y configurar</button></form>{#if remoteAgentKey}<div class="remote-agent-secret"><div><strong>Ahora configura Codex y comprueba la conexión</strong><p>La opción de Codex copia una tabla TOML lista para añadir a tu configuración local. Incluye la clave secreta: no pegues ese contenido en un repositorio ni lo compartas.</p></div><code>{remoteAgentKey}</code>{#if remoteAgentCheck}<p class="agent-key-check">{remoteAgentCheck}</p>{/if}<div class="agent-secret-actions"><button on:click={() => void copyRemoteAgentKey()}>Copiar solo la clave</button><button class="subtle-button" on:click={() => void copyRemoteAgentSetup()}>{remoteAgentClient === 'codex' ? 'Copiar configuración de Codex' : 'Copiar guía MCP'}</button><button class="subtle-button" on:click={() => void validateRemoteAgentKey()} disabled={remoteAgentChecking}>{remoteAgentChecking ? 'Probando servidor MCP…' : 'Probar conexión completa'}</button><button class="subtle-button" on:click={() => { remoteAgentKey = ''; remoteAgentCheck = ''; }}>Ocultar clave</button></div></div>{/if}<div class="eyebrow agent-list-label">AGENTES REGISTRADOS</div>{#if editingAgent}<form class="agent-edit-form" on:submit|preventDefault={saveAgentEdit}><strong>Editar {editingAgent.name}</strong><label>Nombre<input bind:value={editAgentName} required maxlength="100" /></label><label>Modelo<input bind:value={editAgentModel} maxlength="120" /></label><label>Proveedor<input bind:value={editAgentProvider} maxlength="80" /></label><label>Cliente<input bind:value={editAgentClient} maxlength="80" /></label><div><button class="primary" disabled={busy}>Guardar</button><button type="button" class="secondary" on:click={() => editingAgent = null}>Cancelar</button></div></form>{/if}{#each agents as a (a.id)}<div class="agent"><span class:online={a.active}></span><div><strong>{a.name}{a.credentialMode === 'mcp' ? ' · MCP' : ''}</strong><small>{a.model || a.clientType} · {a.active ? 'Activo' : 'Revocado'}</small></div>{#if a.lastSeenAt}<time>{date(a.lastSeenAt)}</time>{/if}<button class="agent-edit-button" on:click={() => beginAgentEdit(a)}>Editar</button>{#if a.active && a.name.toLowerCase() !== 'meido'}<button class="revoke-agent" on:click={() => void revokeRemoteAgent(a)}>Desactivar</button>{/if}</div>{/each}{#if !agents.length}<div class="empty">Aún no hay agentes. Crea una clave MCP para conectar el primero.</div>{/if}</section>
-        {:else}<section class="work-panel graph-workspace"><div class="panel-head"><div><div class="eyebrow">MAPA DEL WORKSPACE</div><h2>Grafo 3D</h2></div><select aria-label="Proyecto visible en el mapa" bind:value={selectedProject}><option value="">Todos los proyectos</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p class="graph-hint">{selectedProject ? 'Vista del proyecto: tareas y conocimiento quedan agrupados alrededor de su proyecto.' : 'Vista general: muestra proyectos y sus relaciones. Elige un proyecto para explorar sus tareas y conocimiento.'} Arrastra para orbitar y usa la rueda para acercar.</p><div class="graph-canvas"><ThreeDGraph nodes={graphNodes} links={graphLinks} onSelect={(node) => selectedGraphNode = node} /></div>{#if selectedGraphNode}<aside class="graph-detail"><strong>{selectedGraphNode.label}</strong><span>{selectedGraphNode.kind === 'project' ? 'Proyecto' : selectedGraphNode.kind === 'task' ? 'Tarea' : selectedGraphNode.knowledgeKind}</span>{#if selectedGraphNode.summary}<p>{selectedGraphNode.summary}</p>{/if}{#if selectedGraphNode.source}<small>{selectedGraphNode.source}</small>{/if}</aside>{/if}</section>{/if}
+        {:else if section === 'agents'}<section class="work-panel"><div class="eyebrow">EQUIPO Y CONEXIONES</div><h2>Conecta tu agente en un momento</h2><p class="graph-hint">Elige Codex, crea una credencial y copia una configuración lista para pegar. Después probamos la conexión real con el servidor MCP y una lectura de tus proyectos.</p><div class="agent-connect-guide"><span class="guide-step">01</span><div><strong>Elige tu cliente</strong><p>La guía se adapta a Codex, OpenCode y otros clientes MCP.</p></div><span class="guide-step">02</span><div><strong>Crea una clave exclusiva</strong><p>Puedes revocarla cuando quieras; Mitpad conserva solo su hash.</p></div><span class="guide-step">03</span><div><strong>Prueba antes de usar</strong><p>Confirmamos el saludo MCP, la lista de herramientas y una lectura real.</p></div></div><form class="remote-agent-form" on:submit|preventDefault={createRemoteAgent}><label>Cliente<select bind:value={remoteAgentClient}><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="cursor">Cursor</option><option value="mcp">Otro cliente MCP</option></select></label><label>Nombre del agente<input bind:value={remoteAgentName} maxlength="100" required placeholder="Codex personal" /></label><label>Modelo<input bind:value={remoteAgentModel} maxlength="120" placeholder="auto" /></label><label>Proveedor<input bind:value={remoteAgentProvider} maxlength="80" placeholder="auto" /></label><button disabled={busy}>Crear y configurar</button></form>{#if remoteAgentKey}<div class="remote-agent-secret"><div><strong>Ahora configura Codex y comprueba la conexión</strong><p>La opción de Codex copia una tabla TOML lista para añadir a tu configuración local. Incluye la clave secreta: no pegues ese contenido en un repositorio ni lo compartas.</p></div><code>{remoteAgentKey}</code>{#if remoteAgentCheck}<p class="agent-key-check">{remoteAgentCheck}</p>{/if}<div class="agent-secret-actions"><button on:click={() => void copyRemoteAgentKey()}>Copiar solo la clave</button><button class="subtle-button" on:click={() => void copyRemoteAgentSetup()}>{remoteAgentClient === 'codex' ? 'Copiar configuración de Codex' : 'Copiar guía MCP'}</button><button class="subtle-button" on:click={() => void validateRemoteAgentKey()} disabled={remoteAgentChecking}>{remoteAgentChecking ? 'Probando servidor MCP…' : 'Probar conexión completa'}</button><button class="subtle-button" on:click={() => { remoteAgentKey = ''; remoteAgentCheck = ''; }}>Ocultar clave</button></div></div>{/if}<div class="eyebrow agent-list-label">AGENTES REGISTRADOS</div>{#if editingAgent}<form class="agent-edit-form" on:submit|preventDefault={saveAgentEdit}><strong>Editar {editingAgent.name}</strong><label>Nombre<input bind:value={editAgentName} required maxlength="100" /></label><label>Modelo<input bind:value={editAgentModel} maxlength="120" /></label><label>Proveedor<input bind:value={editAgentProvider} maxlength="80" /></label><label>Cliente<input bind:value={editAgentClient} maxlength="80" /></label><div><button class="primary" disabled={busy}>Guardar</button><button type="button" class="secondary" on:click={() => editingAgent = null}>Cancelar</button></div></form>{/if}{#each agents as a (a.id)}<div class="agent"><span class:online={a.active}></span><div><strong>{a.name}{a.credentialMode === 'mcp' ? ' · MCP' : ''}</strong><small>{a.model || a.clientType} · {a.active ? 'Activo' : 'Revocado'}</small></div>{#if a.lastSeenAt}<time>{date(a.lastSeenAt)}</time>{/if}<button class="agent-edit-button" on:click={() => beginAgentEdit(a)}>Editar</button>{#if a.active && a.name.toLowerCase() !== 'meido'}<button class="revoke-agent" on:click={() => void revokeRemoteAgent(a)}>Desactivar</button>{/if}</div>{/each}{#if !agents.length}<div class="empty">Aún no hay agentes. Crea una clave MCP para conectar el primero.</div>{/if}{#if !pageDone.agents}<PaginationFooter label="agentes" count={agents.length} loading={pagingSection === "agents"} error={pageError} onLoadMore={() => void loadMore("agents")} />{/if}</section>
+        {:else}<section class="work-panel graph-workspace"><div class="panel-head"><div><div class="eyebrow">MAPA DEL WORKSPACE</div><h2>Grafo 3D</h2></div><select aria-label="Proyecto visible en el mapa" bind:value={selectedProject}><option value="">Todos los proyectos</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p class="graph-hint">{selectedProject ? 'Vista del proyecto: tareas y conocimiento quedan agrupados alrededor de su proyecto.' : 'Vista general: muestra proyectos y sus relaciones. Elige un proyecto para explorar sus tareas y conocimiento.'} Arrastra para orbitar y usa la rueda para acercar.</p><div class="graph-canvas"><ThreeDGraph nodes={graphNodes} links={graphLinks} onSelect={(node) => selectedGraphNode = node} /></div>{#if !pageDone.knowledge}<PaginationFooter label="elementos de contexto" count={knowledge.length} loading={pagingSection === "knowledge"} error={pageError} onLoadMore={() => void loadMore("knowledge")} />{/if}{#if selectedGraphNode}<aside class="graph-detail"><strong>{selectedGraphNode.label}</strong><span>{selectedGraphNode.kind === 'project' ? 'Proyecto' : selectedGraphNode.kind === 'task' ? 'Tarea' : selectedGraphNode.knowledgeKind}</span>{#if selectedGraphNode.summary}<p>{selectedGraphNode.summary}</p>{/if}{#if selectedGraphNode.source}<small>{selectedGraphNode.source}</small>{/if}</aside>{/if}</section>{/if}
     </section>
         </div>
     </div>
     {#if remoteAgentDiagnostics.length}<aside class="mcp-diagnostics" aria-live="polite"><header><strong>Diagnóstico MCP</strong><button aria-label="Cerrar diagnóstico" on:click={() => remoteAgentDiagnostics = []}>×</button></header>{#each remoteAgentDiagnostics as item}<div class="diagnostic-row"><span class="diagnostic-dot" class:diagnostic-ok={item.status === 'ok'} class:diagnostic-error={item.status === 'error'} class:diagnostic-pending={item.status === 'pending' || item.status === 'checking'}></span><strong>{item.label}</strong><small>{item.detail}</small></div>{/each}</aside>{/if}
-    {#if selectedTask}<div class="task-modal-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) selectedTask = null; }}><dialog open class="task-dialog" aria-label="Detalle de tarea"><header><div><div class="eyebrow">TAREA · {projects.find(project => project.id === selectedTask.projectId)?.name ?? 'Proyecto'}</div><h2>Detalles y conversación</h2></div><button class="secondary" on:click={() => selectedTask = null}>Cerrar</button></header><label>Título<input bind:value={selectedTask.title} maxlength="200" /></label><label>Descripción<textarea bind:value={selectedTask.description} rows="4"></textarea></label><div class="task-detail-fields"><label>Estado<select bind:value={selectedTask.status}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select></label><label>Prioridad<select bind:value={selectedTask.priority}><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></label><label>Agente<select bind:value={selectedTask.assigneeAgentId}><option value={null}>Sin asignar</option>{#each agents.filter(agent => agent.active) as agent (agent.id)}<option value={agent.id}>{agent.name}</option>{/each}</select></label></div><button class="primary" on:click={() => void saveTaskDetails()} disabled={busy}>Guardar tarea</button><section class="task-conversation"><div class="eyebrow">CONVERSACIÓN · {taskComments.length}</div><form on:submit|preventDefault={addTaskComment}><select bind:value={taskCommentKind} aria-label="Tipo de comentario"><option value="message">Comentario</option><option value="instruction">Instrucción</option><option value="question">Pregunta</option><option value="decision">Decisión</option><option value="update">Actualización</option></select><textarea bind:value={taskComment} placeholder="Añade contexto para tu equipo o agente…" rows="3"></textarea><button class="primary" disabled={busy || !taskComment.trim()}>Añadir comentario</button></form><div class="task-comment-list">{#each taskComments as comment (comment.id)}<article><div><strong>{comment.authorType === 'agent' ? 'Agente' : 'Tú'}</strong><span>{comment.kind}</span><time>{date(comment.createdAt)}</time></div><p>{comment.content}</p></article>{/each}{#if !taskComments.length}<p class="empty-small">Aún no hay conversación en esta tarea.</p>{/if}</div></section></dialog></div>{/if}
+    {#if selectedTask}<div class="task-modal-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) selectedTask = null; }}><dialog open class="task-dialog" aria-label="Detalle de tarea"><header><div><div class="eyebrow">TAREA · {projects.find(project => project.id === selectedTask.projectId)?.name ?? 'Proyecto'}</div><h2>Detalles y conversación</h2></div><button class="secondary" on:click={() => selectedTask = null}>Cerrar</button></header><label>Título<input bind:value={selectedTask.title} maxlength="200" /></label><label>Descripción<textarea bind:value={selectedTask.description} rows="4"></textarea></label><div class="task-detail-fields"><label>Estado<select bind:value={selectedTask.status}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select></label><label>Prioridad<select bind:value={selectedTask.priority}><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></label><label>Agente<select bind:value={selectedTask.assigneeAgentId}><option value={null}>Sin asignar</option>{#each agents.filter(agent => agent.active) as agent (agent.id)}<option value={agent.id}>{agent.name}</option>{/each}</select></label></div><button class="primary" on:click={() => void saveTaskDetails()} disabled={busy}>Guardar tarea</button><section class="task-conversation"><div class="eyebrow">CONVERSACIÓN · {taskComments.length}{taskCommentsDone ? "" : "+"}</div><form on:submit|preventDefault={addTaskComment}><select bind:value={taskCommentKind} aria-label="Tipo de comentario"><option value="message">Comentario</option><option value="instruction">Instrucción</option><option value="question">Pregunta</option><option value="decision">Decisión</option><option value="update">Actualización</option></select><textarea bind:value={taskComment} placeholder="Añade contexto para tu equipo o agente…" rows="3"></textarea><button class="primary" disabled={busy || !taskComment.trim()}>Añadir comentario</button></form><div class="task-comment-list">{#if !taskCommentsDone}<button class="comment-load-more" type="button" on:click={() => void loadMoreTaskComments()} disabled={taskCommentsLoading}>{taskCommentsLoading ? "Cargando…" : "↑ Cargar comentarios anteriores"}</button>{/if}{#each taskComments as comment (comment.id)}<article><div><strong>{comment.authorType === 'agent' ? 'Agente' : 'Tú'}</strong><span>{comment.kind}</span><time>{date(comment.createdAt)}</time></div><p>{comment.content}</p></article>{/each}{#if !taskComments.length}<p class="empty-small">Aún no hay conversación en esta tarea.</p>{/if}</div></section></dialog></div>{/if}
     {#if previewFile}<div class="preview-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) previewFile = null; }}><dialog open class="preview-dialog" aria-label={`Vista previa de ${previewFile.filename}`}><header><div><div class="eyebrow">VISTA PREVIA</div><strong>{previewFile.filename}</strong></div><div><a href={previewFile.url ?? '#'} target="_blank" rel="noreferrer" download={previewFile.filename}>Descargar</a><button class="secondary" on:click={() => previewFile = null}>Cerrar</button></div></header>{#if previewLoading}<div class="empty">Preparando vista previa…</div>{:else if previewError}<div class="preview-message">{previewError}</div>{:else if previewFile.contentType === 'application/pdf'}<iframe class="preview-pdf" title={`Vista previa de ${previewFile.filename}`} src={previewFile.url}></iframe>{:else}<pre class="preview-text">{previewContent}</pre>{/if}</dialog></div>{/if}
     {/if}
     <div class="auth-shell" class:auth-hidden={!!lastAuthToken}>
@@ -792,6 +968,9 @@
     .task-comment-list article span { color:var(--clay); }
     .task-comment-list article time { margin-left:auto; color:var(--quiet); }
     .task-comment-list article p { margin:6px 0 0; white-space:pre-wrap; }
+    .comment-load-more { display:block; margin:0 auto 8px; padding:7px 11px; border:1px solid #454b3c; border-radius:6px; background:#24291f; color:#c9d5bc; font-size:11px; cursor:pointer; }
+    .comment-load-more:hover:not(:disabled) { border-color:#82936e; background:#2c3326; }
+    .comment-load-more:disabled { opacity:.6; cursor:wait; }
     .agent-edit-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0; padding:15px; border:1px solid var(--line); border-radius:7px; background:#20231c; }
     .agent-edit-form>strong,.agent-edit-form>div { grid-column:1/-1; }
     .agent-edit-form>div { display:flex; gap:8px; }
