@@ -1,8 +1,8 @@
 import { ConvexError, v } from "convex/values";
-import { internalMutation, internalQuery, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
-import { exigirToken, userIdPersonal } from "./acceso";
+import { userIdPersonal } from "./acceso";
 import { asegurarWorkspace } from "./workspaces";
 
 const kind = v.union(v.literal("module"), v.literal("function"), v.literal("data"), v.literal("capability"), v.literal("integration"), v.literal("decision"));
@@ -33,11 +33,10 @@ const entries: Entry[] = [
   { project: "meido_movil", key: "offline", kind: "data", title: "Cola sin conexión", summary: "Conserva órdenes pendientes para reintentarlas cuando vuelve la conectividad.", source: "lib/offline.dart", tags: ["offline", "queue"] },
   { project: "meido_movil", key: "agents", kind: "capability", title: "Supervisión de agentes", summary: "Muestra encargos, sesiones, actividad, preguntas y permisos de agentes.", source: "lib/pantalla_agentes.dart; lib/hoja_pregunta.dart", tags: ["agents", "monitoring"] },
   { project: "meido_movil", key: "phone-tools", kind: "capability", title: "Voz y herramientas móviles", summary: "Incluye voz, rutinas, ajustes, diagnóstico, notificaciones y WhatsApp.", source: "lib/voz.dart; lib/ajustes.dart; lib/rutinas.dart; lib/whatsapp_mensajes.dart; lib/pantalla_diagnostico.dart", tags: ["voice", "android"] },
-  { project: "Mitpad", key: "local-first", kind: "module", title: "Escritorio local-first", summary: "SvelteKit/Tauri y SQLite guardan proyectos, tareas, notas e imágenes con cola de reintentos.", source: "src/routes/+page.svelte; src-tauri/src/db/; src-tauri/src/sync/", tags: ["tauri", "sqlite", "offline"] },
   { project: "Mitpad", key: "workbench", kind: "data", title: "Workspace de Convex", summary: "Workspace, proyectos, relaciones, agentes, tareas, comentarios, eventos y notas.", source: "convex/schema.ts; convex/workbench.ts; convex/workspaces.ts", tags: ["convex", "schema"] },
   { project: "Mitpad", key: "tasks", kind: "capability", title: "Flujo de tareas", summary: "Estados backlog, por hacer, en curso, revisión, bloqueado y hecho; prioridades y asignaciones.", source: "convex/workbench.ts; src/routes/+page.svelte", tags: ["tasks", "workflow"] },
   { project: "Mitpad", key: "agents", kind: "data", title: "Registro de agentes", summary: "Identidad, modelo, proveedor, cliente, estado y clave API guardada como hash.", source: "convex/agents.ts; convex/schema.ts", tags: ["agents", "security"] },
-  { project: "Mitpad", key: "notes-images", kind: "capability", title: "Notas, memoria e imágenes", summary: "Notas atendidas o activas, vínculos a proyectos y adjuntos en Convex Storage con cuotas.", source: "convex/notes.ts; convex/images.ts; src-tauri/src/db/images.rs", tags: ["notes", "images"] },
+  { project: "Mitpad", key: "notes-images", kind: "capability", title: "Notas, memoria e imágenes", summary: "Notas atendidas o activas, vínculos a proyectos y adjuntos en Convex Storage con cuotas.", source: "convex/web.ts; src/lib/WebWorkbench.svelte", tags: ["notes", "images"] },
   { project: "Mitpad", key: "activity", kind: "data", title: "Historial de actividad", summary: "Registra actor, entidad, resumen y fecha para observar acciones de agentes.", source: "convex/workbench.ts; convex/schema.ts", tags: ["activity", "audit"] },
   { project: "Mitpad", key: "map", kind: "capability", title: "Mapa 3D", summary: "Grafo espacial de proyectos, tareas y conocimiento técnico.", source: "src/lib/ThreeDGraph.svelte; convex/knowledge.ts", tags: ["graph", "3d"] },
   { project: "Mitpad", key: "web", kind: "capability", title: "Monitoreo web", summary: "Panel de proyectos, tareas, agentes y actividad con actualización periódica desde Convex.", source: "src/lib/WebWorkbench.svelte", tags: ["web", "monitoring"] },
@@ -64,17 +63,6 @@ const relations = [
   ["Mitpad", "CosechIA", "related_to", "Mitpad organiza el trabajo de CosechIA y conecta el repositorio con sus funciones y datos técnicos."],
   ["meido_movil", "CosechIA", "related_to", "La app móvil puede supervisar trabajo de CosechIA mediante el flujo ProjectHub compartido."],
 ] as const;
-
-export const listar = query({
-  args: { token: v.string(), projectId: v.optional(v.id("projects")), kind: v.optional(kind) }, returns: v.array(output),
-  handler: async (ctx, args) => {
-    exigirToken(args.token);
-    const workspace = await ctx.db.query("workspaces").withIndex("by_ownerId", (q) => q.eq("ownerId", userIdPersonal())).unique();
-    if (!workspace) return [];
-    const rows = await ctx.db.query("projectKnowledge").withIndex("by_workspaceId_and_projectId", (q) => q.eq("workspaceId", workspace._id)).take(1000);
-    return rows.filter((item) => (!args.projectId || item.projectId === args.projectId) && (!args.kind || item.kind === args.kind)).map((item) => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags, updatedAt: item.updatedAt }));
-  },
-});
 
 export const listarAgente = internalQuery({
   args: { workspaceId: v.id("workspaces"), projectId: v.optional(v.id("projects")), kind: v.optional(kind) },

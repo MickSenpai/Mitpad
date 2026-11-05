@@ -16,7 +16,7 @@ export default defineSchema({
     updatedAt: v.number(),
   }).index("by_ownerId", ["ownerId"]),
 
-  // Authenticated web accounts map to private workspaces; legacy ownerId remains for desktop agents.
+  // Authenticated web accounts map to private workspaces; legacy ownerId remains for the historical personal workspace.
   webAccounts: defineTable({
     tokenIdentifier: v.string(), // sesión actual; se conserva para compatibilidad con Clerk durante transición
     userId: v.optional(v.id("users")), // identidad estable de Convex Auth, independiente de la sesión
