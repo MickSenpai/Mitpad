@@ -1,10 +1,9 @@
 import { ConvexError, v } from "convex/values";
-import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { exigirToken, userIdPersonal } from "./acceso";
-import { asegurarWorkspace } from "./workspaces";
+import { userIdPersonal } from "./acceso";
 
 const projectStatus = v.union(v.literal("active"), v.literal("archived"));
 const taskStatus = v.union(v.literal("backlog"), v.literal("todo"), v.literal("in_progress"), v.literal("review"), v.literal("done"), v.literal("blocked"));
@@ -57,10 +56,6 @@ const publicEvent = (doc: Doc<"activityEvents">) => ({
   entityType: doc.entityType, entityId: doc.entityId, summary: doc.summary,
   details: doc.details ?? null, createdAt: doc.createdAt,
 });
-
-async function personalWorkspace(ctx: QueryCtx | MutationCtx) {
-  return await ctx.db.query("workspaces").withIndex("by_ownerId", (q) => q.eq("ownerId", userIdPersonal())).unique();
-}
 
 async function ensureAgent(ctx: QueryCtx | MutationCtx, workspaceId: Id<"workspaces">, agentId: Id<"agents">) {
   const agent = await ctx.db.get(agentId);
@@ -214,77 +209,6 @@ async function listEvents(ctx: QueryCtx, workspaceId: Id<"workspaces">, since?: 
 }
 
 // ------------------------ Human pilot API ------------------------
-
-export const proyectos = query({
-  args: { token: v.string() }, returns: v.array(projectValidator),
-  handler: async (ctx, { token }) => { exigirToken(token); const w = await personalWorkspace(ctx); return w ? listProjects(ctx, w._id) : []; },
-});
-
-export const crearProyecto = mutation({
-  args: { token: v.string(), name: v.string(), description: v.optional(v.string()) }, returns: projectValidator,
-  handler: async (ctx, { token, name, description }) => {
-    exigirToken(token); const workspaceId = await asegurarWorkspace(ctx, userIdPersonal());
-    return createProject(ctx, workspaceId, { kind: "human", id: "pilot" }, name, description ?? "");
-  },
-});
-
-export const tareas = query({
-  args: { token: v.string(), projectId: v.optional(v.id("projects")), status: v.optional(taskStatus) }, returns: v.array(taskValidator),
-  handler: async (ctx, { token, projectId, status }) => { exigirToken(token); const w = await personalWorkspace(ctx); return w ? listTasks(ctx, w._id, projectId, status) : []; },
-});
-
-export const crearTarea = mutation({
-  args: {
-    token: v.string(), projectId: v.id("projects"), title: v.string(), description: v.optional(v.string()),
-    priority: v.optional(taskPriority), dueAt: v.optional(v.number()), assigneeAgentId: v.optional(v.id("agents")),
-    parentTaskId: v.optional(v.id("tasks")),
-  }, returns: taskValidator,
-  handler: async (ctx, args) => {
-    exigirToken(args.token); const w = await personalWorkspace(ctx);
-    if (!w) throw new ConvexError("Crea primero el espacio personal.");
-    return createTask(ctx, w._id, { kind: "human", id: "pilot" }, {
-      projectId: args.projectId, title: args.title, description: args.description ?? "", priority: args.priority ?? "medium",
-      dueAt: args.dueAt, assigneeAgentId: args.assigneeAgentId, parentTaskId: args.parentTaskId,
-    });
-  },
-});
-
-export const actualizarTarea = mutation({
-  args: {
-    token: v.string(), taskId: v.id("tasks"), title: v.optional(v.string()), description: v.optional(v.string()),
-    status: v.optional(taskStatus), priority: v.optional(taskPriority), dueAt: v.optional(v.number()),
-    assigneeAgentId: v.optional(v.id("agents")), projectId: v.optional(v.id("projects")),
-  }, returns: taskValidator,
-  handler: async (ctx, args) => {
-    exigirToken(args.token); const w = await personalWorkspace(ctx);
-    if (!w) throw new ConvexError("No existe el espacio personal.");
-    const { token: _token, taskId, ...patch } = args;
-    return updateTask(ctx, w._id, { kind: "human", id: "pilot" }, taskId, patch);
-  },
-});
-
-export const comentarios = query({
-  args: { token: v.string(), taskId: v.id("tasks") }, returns: v.array(commentValidator),
-  handler: async (ctx, { token, taskId }) => {
-    exigirToken(token); const w = await personalWorkspace(ctx); if (!w) return [];
-    const task = await ctx.db.get(taskId); if (!task || task.workspaceId !== w._id) throw new ConvexError("La tarea no pertenece a este espacio.");
-    const docs = await ctx.db.query("taskComments").withIndex("by_taskId_and_createdAt", (q) => q.eq("taskId", taskId)).order("asc").take(500);
-    return docs.map(publicComment);
-  },
-});
-
-export const agregarComentario = mutation({
-  args: { token: v.string(), taskId: v.id("tasks"), kind: commentKind, content: v.string() }, returns: commentValidator,
-  handler: async (ctx, { token, taskId, kind, content }) => {
-    exigirToken(token); const w = await personalWorkspace(ctx); if (!w) throw new ConvexError("No existe el espacio personal.");
-    return addComment(ctx, w._id, { kind: "human", id: "pilot" }, taskId, kind, content);
-  },
-});
-
-export const actividad = query({
-  args: { token: v.string(), since: v.optional(v.number()) }, returns: v.array(eventValidator),
-  handler: async (ctx, { token, since }) => { exigirToken(token); const w = await personalWorkspace(ctx); return w ? listEvents(ctx, w._id, since) : []; },
-});
 
 // -------------------------- Agent REST API -------------------------
 

@@ -2,9 +2,9 @@ import { httpRouter } from "convex/server";
 import { ConvexError } from "convex/values";
 import { httpAction } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { exigirToken, hashAgentApiKey, keyFromRequest } from "./acceso";
+import { hashAgentApiKey, keyFromRequest } from "./acceso";
 import { auth } from "./auth";
 
 const http = httpRouter();
@@ -63,28 +63,6 @@ async function getAgent(ctx: ActionCtx, request: Request) {
 const handler = httpAction(async (ctx, request) => {
   const url = new URL(request.url);
   const path = url.pathname;
-
-  // Human pilot creates agents and receives their one-time API key.
-  if (request.method === "POST" && path === "/api/v1/agents/register") {
-    const auth = request.headers.get("Authorization") ?? "";
-    const pilotToken = auth.startsWith("Bearer ") ? auth.slice(7).trim() : "";
-    try { exigirToken(pilotToken); } catch { return fail("Token humano inválido.", 401); }
-    const body = await readBody(request);
-    if (!body) return fail("Se esperaba un objeto JSON válido de hasta 1 MB.", 400);
-    try {
-      const name = str(body, "name", 100, true)!;
-      const model = str(body, "model", 120, true)!;
-      const modelProvider = str(body, "model_provider", 80, true)!;
-      const clientType = str(body, "client_type", 80, true)!;
-      const pilot = str(body, "pilot", 120, true)!;
-      const result = await ctx.runMutation(api.agents.registrar, { token: pilotToken, name, model, modelProvider, clientType, pilot });
-      return json({ agent: result.agent, api_key: result.apiKey, agent_instructions: result.instructions }, 201);
-    } catch (error) {
-      if (error instanceof ConvexError) return fail(String(error.data), 400);
-      console.error("Error interno al registrar un agente de Mitpad.");
-      return fail("No se pudo registrar el agente.", 500);
-    }
-  }
 
   const agent = await getAgent(ctx, request);
   if (!agent) return fail("API key inválida o desactivada.", 401);

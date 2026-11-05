@@ -7,6 +7,7 @@
     import { PUBLIC_CONVEX_URL } from '$env/static/public';
     import { api } from '../../convex/_generated/api';
     import ThreeDGraph from '$lib/ThreeDGraph.svelte';
+    import { buildGraphLinks, buildGraphNodes } from '$lib/graph';
     import PaginationFooter from '$lib/PaginationFooter.svelte';
     import AccountProfile from '$lib/AccountProfile.svelte';
     import PrivateVault from '$lib/PrivateVault.svelte';
@@ -68,31 +69,8 @@
     );
     $: taskHasMore = search.trim() ? !taskSearchDone.title || !taskSearchDone.description : !pageDone.tasks;
     $: fileHasMore = fileSearch.trim() ? !fileSearchDone : !pageDone.files;
-    $: graphNodes = (() => {
-        const visibleProjects = projects.filter(p => !selectedProject || p.id === selectedProject);
-        const overviewRadius = Math.max(360, visibleProjects.length * 135);
-        const angleFor = (i: number, offset = 0) => i * 2.399963 + offset;
-        const projectNodes = visibleProjects.map((p, i) => {
-            const angle = selectedProject ? 0 : -Math.PI / 2 + (i / Math.max(visibleProjects.length, 1)) * Math.PI * 2;
-            const x = selectedProject ? 0 : Math.cos(angle) * overviewRadius;
-            const z = selectedProject ? 0 : Math.sin(angle) * overviewRadius;
-            return { id: p.id, label: p.name, kind: 'project' as const, projectId: p.id, x, y: 0, z };
-        });
-        if (!selectedProject || !visibleProjects.length) return projectNodes;
-        const projectId = visibleProjects[0].id;
-        const taskNodes = tasks.filter(t => t.projectId === projectId).map((t, i) => {
-            const angle = angleFor(i);
-            const radius = 105 + Math.floor(i / 12) * 28;
-            return { id: `task:${t.id}`, label: t.title, kind: 'task' as const, projectId, x: Math.cos(angle) * radius, y: 34 + (i % 5 - 2) * 20, z: Math.sin(angle) * radius, status: t.status };
-        });
-        const knowledgeNodes = knowledge.filter(k => k.projectId === projectId).map((k, i) => {
-            const angle = angleFor(i, 0.8);
-            const radius = 205 + Math.floor(i / 16) * 32;
-            return { id: `knowledge:${k.id}`, label: k.title, kind: 'knowledge' as const, projectId, x: Math.cos(angle) * radius, y: -34 + (i % 5 - 2) * 20, z: Math.sin(angle) * radius, knowledgeKind: k.kind, summary: k.summary, source: k.source, tags: k.tags };
-        });
-        return [...projectNodes, ...taskNodes, ...knowledgeNodes];
-    })();
-    $: graphLinks = projectLinks.map(link => ({ source_project_id: link.sourceProjectId, target_project_id: link.targetProjectId, description: link.description }));
+    $: graphNodes = buildGraphNodes(projects, tasks, knowledge, selectedProject);
+    $: graphLinks = buildGraphLinks(projectLinks);
 
     onMount(() => {
         if (!PUBLIC_CONVEX_URL) { error = 'Falta configurar PUBLIC_CONVEX_URL para la web.'; return; }
