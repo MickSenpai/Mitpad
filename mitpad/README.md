@@ -13,8 +13,6 @@ Mitpad es un workspace web para coordinar proyectos, tareas, notas, imágenes y 
 - Explorar proyectos, tareas y conocimiento en el mapa 3D.
 - Usar la web desde navegadores modernos sin instalar una aplicación local.
 
-El código de la interfaz de escritorio anterior se conserva en `docs/archive/desktop-workbench-before-web-migration.svelte.txt` como referencia de la migración.
-
 ## Desarrollo local
 
 Requisitos: Node.js 20 o posterior y pnpm.
@@ -48,7 +46,7 @@ tool_timeout_sec = 60
 
 No subas `config.toml` a Git: contiene la credencial. Después ejecuta `codex mcp list` y reinicia Codex para que cargue la conexión. En otros clientes, configura el mismo endpoint como Streamable HTTP y envía `Authorization: Bearer <clave>`.
 
-No incluyas la clave del agente en chats, el repositorio ni los logs. El servicio usa `MITPAD_CONVEX_SITE_URL` y el puerto `PORT` de Render; `MITPAD_TOKEN` solo permanece en el backend y no se comparte con agentes.
+No incluyas la clave del agente en chats, el repositorio ni los logs. El servicio usa `MITPAD_CONVEX_SITE_URL` y el puerto `PORT` de Render; los agentes solo usan sus claves individuales (ya no existe un token compartido `MITPAD_TOKEN`).
 
 El MCP remoto puede listar archivos, vincularlos a proyectos y subir documentos de texto/Markdown creados por el agente. Como el servicio remoto no puede leer el disco de tu equipo, para cargar un PDF, DOCX u otro archivo local original configura también el servidor stdio local:
 
@@ -60,5 +58,3 @@ env = { MITPAD_CONVEX_SITE_URL = "https://brave-walrus-170.convex.site", MITPAD_
 ```
 
 Reemplaza las rutas por las de tu equipo. `MITPAD_UPLOAD_ROOT` limita qué archivos puede leer el agente; el nombre de la ruta que envíes a `mitpad_files_upload_local` debe quedar dentro de esa carpeta. El agente debe consultar primero `mitpad_projects_list` y luego usar el ID exacto del proyecto al subir; el archivo queda asociado a ese proyecto al registrarse. Los archivos locales conservan sus bytes originales y tienen el mismo límite de 25 MB.
-
-El proyecto también conserva la estructura Tauri anterior como fuente histórica, pero la aplicación mantenida y publicada es la web.
