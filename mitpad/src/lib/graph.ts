@@ -5,12 +5,13 @@ export type GraphNode = {
     x: number; y: number; z: number; status?: string; knowledgeKind?: KnowledgeKind;
     summary?: string; source?: string; tags?: string[];
 };
-export type GraphLink = { source_project_id: string; target_project_id: string; description?: string };
+export type RelationType = 'related_to' | 'parent_of' | 'depends_on';
+export type GraphLink = { source_project_id: string; target_project_id: string; relation_type?: RelationType; description?: string };
 
 type ProjectRow = { id: string; name: string };
 type TaskRow = { id: string; projectId: string; title: string; status: string };
 type KnowledgeRow = { id: string; projectId: string; title: string; kind: KnowledgeKind; summary: string; source: string; tags: string[] };
-type LinkRow = { sourceProjectId: string; targetProjectId: string; description?: string };
+type LinkRow = { sourceProjectId: string; targetProjectId: string; relationType?: RelationType; description?: string };
 
 const GOLDEN_ANGLE = 2.399963;
 
@@ -42,5 +43,5 @@ export function buildGraphNodes(
 }
 
 export function buildGraphLinks(projectLinks: LinkRow[]): GraphLink[] {
-    return projectLinks.map(link => ({ source_project_id: link.sourceProjectId, target_project_id: link.targetProjectId, description: link.description }));
+    return projectLinks.map(link => ({ source_project_id: link.sourceProjectId, target_project_id: link.targetProjectId, relation_type: link.relationType, description: link.description }));
 }

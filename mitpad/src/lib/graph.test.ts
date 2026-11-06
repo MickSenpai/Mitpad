@@ -28,4 +28,8 @@ describe("buildGraphLinks", () => {
     expect(buildGraphLinks([{ sourceProjectId: "a", targetProjectId: "b", description: "d" }]))
       .toEqual([{ source_project_id: "a", target_project_id: "b", description: "d" }]);
   });
+  it("keeps the relation type so the map can tell dependencies from plain relations", () => {
+    expect(buildGraphLinks([{ sourceProjectId: "a", targetProjectId: "b", relationType: "depends_on" }])[0])
+      .toMatchObject({ relation_type: "depends_on" });
+  });
 });
