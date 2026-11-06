@@ -381,6 +381,49 @@ export const desactivarAgente = mutation({
   },
 });
 
+const esMeido = (agent: { name: string }) => agent.name.trim().toLowerCase() === "meido";
+
+// Borra al agente y su clave (el hash deja de existir, así que ya no puede autenticarse).
+// Las tareas que tenía asignadas se conservan sin responsable; el historial queda como está.
+async function borrarAgente(ctx: MutationCtx, agent: Doc<"agents">) {
+  for (;;) {
+    const assigned = await ctx.db.query("tasks").withIndex("by_assigneeAgentId_and_status", (q) => q.eq("assigneeAgentId", agent._id)).take(200);
+    if (!assigned.length) break;
+    for (const item of assigned) await ctx.db.patch(item._id, { assigneeAgentId: undefined });
+  }
+  const files = await ctx.db.query("workspaceFiles").withIndex("by_workspaceId_and_createdAt", (q) => q.eq("workspaceId", agent.workspaceId)).collect();
+  for (const file of files) if (file.uploadedByAgentId === agent._id) await ctx.db.patch(file._id, { uploadedByAgentId: undefined });
+  await ctx.db.delete(agent._id);
+}
+
+export const eliminarAgente = mutation({
+  args: { agentId: v.id("agents") }, returns: v.boolean(),
+  handler: async (ctx, { agentId }) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const agent = await ctx.db.get(agentId);
+    if (!agent || agent.workspaceId !== workspace._id) return false;
+    if (esMeido(agent)) throw new ConvexError("Meido es el agente principal y no se puede eliminar.");
+    await borrarAgente(ctx, agent);
+    await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "agent_removed", entityType: "agent", entityId: agentId, summary: `Eliminó el agente ${agent.name}`, createdAt: Date.now() });
+    return true;
+  },
+});
+
+// Limpieza de duplicados: elimina solo los agentes que nunca llegaron a conectarse.
+export const eliminarAgentesSinConexion = mutation({
+  args: {}, returns: v.number(),
+  handler: async (ctx) => {
+    const { workspace, identity } = await exigirWeb(ctx);
+    const agents = await ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", (q) => q.eq("workspaceId", workspace._id)).collect();
+    const removable = agents.filter((agent) => agent.lastSeenAt === undefined && !esMeido(agent));
+    for (const agent of removable) await borrarAgente(ctx, agent);
+    if (removable.length) {
+      await ctx.db.insert("activityEvents", { workspaceId: workspace._id, actorType: "human", actorId: identity.tokenIdentifier, eventType: "agent_removed", entityType: "agent", entityId: "agentes-sin-conexion", summary: `Eliminó ${removable.length} agente${removable.length === 1 ? "" : "s"} sin conexión`, createdAt: Date.now() });
+    }
+    return removable.length;
+  },
+});
+
 export const crearProyecto = mutation({
   args: { name: v.string(), description: v.optional(v.string()) }, returns: project,
   handler: async (ctx, args) => {

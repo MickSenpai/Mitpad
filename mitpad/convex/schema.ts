@@ -163,7 +163,7 @@ export default defineSchema({
     eventType: v.union(
       v.literal("project_created"), v.literal("project_updated"), v.literal("project_archived"), v.literal("project_deleted"),
       v.literal("task_created"), v.literal("task_updated"),
-      v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_updated"), v.literal("agent_revoked"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted"),
+      v.literal("comment_created"), v.literal("agent_registered"), v.literal("agent_updated"), v.literal("agent_revoked"), v.literal("agent_removed"), v.literal("note_created"), v.literal("note_updated"), v.literal("note_linked"), v.literal("note_deleted"),
     ),
     entityType: v.union(v.literal("project"), v.literal("task"), v.literal("comment"), v.literal("agent"), v.literal("note")),
     entityId: v.string(),

@@ -205,3 +205,37 @@ describe("Convex dashboard pagination", () => {
     expect(new Set(actual)).toEqual(new Set(expected));
   });
 });
+
+describe("Removing agents from the web workbench", () => {
+  async function seedAgents() {
+    const { t, workspaceId } = await authenticatedWorkspace();
+    const ids = await t.run(async ({ db }) => {
+      const base = { workspaceId, model: "auto", modelProvider: "auto", clientType: "mcp", pilot: "me", active: true, createdAt: 1 };
+      const idle = await db.insert("agents", { ...base, name: "OpenCode", apiKeyHash: "h-idle" });
+      const idleTwin = await db.insert("agents", { ...base, name: "OpenCode", apiKeyHash: "h-idle-2" });
+      const used = await db.insert("agents", { ...base, name: "Codex", apiKeyHash: "h-used", lastSeenAt: 5 });
+      const meido = await db.insert("agents", { ...base, name: "Meido", apiKeyHash: "h-meido" });
+      const projectId = await db.insert("projects", { workspaceId, name: "P", description: "", status: "active", createdByType: "human", createdById: "t", createdAt: 1, updatedAt: 1 });
+      const taskId = await db.insert("tasks", { workspaceId, projectId, title: "Assigned", description: "", status: "todo", priority: "medium", assigneeAgentId: idle, createdByType: "human", createdById: "t", createdAt: 1, updatedAt: 1 });
+      return { idle, idleTwin, used, meido, taskId };
+    });
+    return { t, ids };
+  }
+
+  it("deletes one agent, frees its tasks and refuses to delete Meido", async () => {
+    const { t, ids } = await seedAgents();
+    expect(await t.mutation(api.web.eliminarAgente, { agentId: ids.idle })).toBe(true);
+    const after = await t.run(async ({ db }) => ({ agent: await db.get(ids.idle), task: await db.get(ids.taskId) }));
+    expect(after.agent).toBeNull();
+    expect(after.task?.assigneeAgentId).toBeUndefined();
+    await expect(t.mutation(api.web.eliminarAgente, { agentId: ids.meido })).rejects.toThrow(/Meido/);
+  });
+
+  it("removes only the agents that never connected", async () => {
+    const { t, ids } = await seedAgents();
+    expect(await t.mutation(api.web.eliminarAgentesSinConexion, {})).toBe(2);
+    const left = await t.run(async ({ db }) => (await db.query("agents").collect()).map((agent) => agent._id).sort());
+    expect(left).toEqual([ids.used, ids.meido].sort());
+    expect(await t.mutation(api.web.eliminarAgentesSinConexion, {})).toBe(0);
+  });
+});
