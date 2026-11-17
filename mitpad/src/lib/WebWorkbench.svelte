@@ -11,6 +11,8 @@
     import PaginationFooter from '$lib/PaginationFooter.svelte';
     import AccountProfile from '$lib/AccountProfile.svelte';
     import PrivateVault from '$lib/PrivateVault.svelte';
+    import Icon from '$lib/Icon.svelte';
+    import TeamPanel from '$lib/TeamPanel.svelte';
     import { isMissingLegacyWorkspaceLink } from '$lib/convexCompat';
     import { extractDocumentPreview } from '$lib/filePreview';
 
@@ -46,8 +48,8 @@
     let error = '', notice = '', lastSync: number | null = null;
     let projects: any[] = [], projectLinks: any[] = [], knowledge: any[] = [], tasks: any[] = [], agents: any[] = [], events: any[] = [], notes: any[] = [], images: any[] = [], files: any[] = [];
     let selectedProject: Id<'projects'> | '' = '', selectedNote = '';
-    let taskStatusFilter = 'all', agentFilter = 'all', priorityFilter = 'all', activityFilter = 'all';
-    let search = '', newProjectName = '', newProjectDescription = '', newTaskTitle = '', newTaskDescription = '';
+    let taskStatusFilter = 'all', agentFilter = 'all', priorityFilter = 'all', tagFilter = 'all', activityFilter = 'all';
+    let search = '', newProjectName = '', newProjectDescription = '', newTaskTitle = '', newTaskDescription = '', newTaskTags = '';
     let editingProject: string = '', editProjectName = '', editProjectDescription = '';
     let relationSource: Id<'projects'> | '' = '', relationTarget: Id<'projects'> | '' = '', relationDescription = '';
     let remoteAgentName = 'OpenCode', remoteAgentModel = 'auto', remoteAgentProvider = 'auto', remoteAgentKey = '';
@@ -57,10 +59,18 @@
     let editingAgent: any = null, editAgentName = '', editAgentModel = '', editAgentProvider = '', editAgentClient = '';
     let selectedTask: any = null, taskComments: any[] = [], taskCommentsCursor = '', taskCommentsDone = true, taskCommentsLoading = false, taskComment = '', taskCommentKind = 'message';
     let noteTitle = '', noteContent = '', noteProject: Id<'projects'> | '' = '', noteStatus: 'open' | 'attended' = 'open';
-    let section: 'projects' | 'board' | 'notes' | 'images' | 'files' | 'activity' | 'agents' | 'graph' | 'secrets' = 'projects';
+    let section: 'projects' | 'board' | 'notes' | 'images' | 'files' | 'activity' | 'agents' | 'graph' | 'secrets' | 'team' = 'projects';
+    type Team = FunctionReturnType<typeof api.collaborators.equipo>;
+    let team: Team | null = null;
+    async function loadTeam() { if (!client) return; try { team = await client.query(api.collaborators.equipo, {}); } catch { team = null; } }
+    async function teamChanged() { selectedProject = ''; selectedGraphNode = null; await loadTeam(); await refresh(true); }
+    async function switchWorkspace(id: string) { if (!client || busy) return; try { await client.mutation(api.collaborators.cambiarWorkspace, { workspaceId: id as Id<'workspaces'> }); await teamChanged(); } catch (e) { error = `No se pudo cambiar de workspace: ${message(e)}`; } }
+    $: if (team && team.current.role !== 'owner' && section === 'secrets') section = 'projects';
     let selectedGraphNode: any = null;
     let workspaceFileInput: HTMLInputElement;
-    $: visibleTasks = tasks.filter(t => (!selectedProject || t.projectId === selectedProject) && (taskStatusFilter === 'all' || t.status === taskStatusFilter) && (agentFilter === 'all' || t.assigneeAgentId === agentFilter || agentFilter === 'unassigned' && !t.assigneeAgentId) && (priorityFilter === 'all' || t.priority === priorityFilter));
+    $: visibleTasks = tasks.filter(t => (!selectedProject || t.projectId === selectedProject) && (taskStatusFilter === 'all' || t.status === taskStatusFilter) && (agentFilter === 'all' || t.assigneeAgentId === agentFilter || agentFilter === 'unassigned' && !t.assigneeAgentId) && (priorityFilter === 'all' || t.priority === priorityFilter) && (tagFilter === 'all' || (t.tags ?? []).includes(tagFilter)));
+    $: allTags = [...new Set(tasks.flatMap((t: any) => t.tags ?? []))].sort() as string[];
+    const parseTags = (text: string) => [...new Set(text.split(',').map(tag => tag.trim().toLowerCase()).filter(Boolean))];
     $: selectedProjectName = projects.find(p => p.id === selectedProject)?.name ?? 'Todos los proyectos';
     $: currentNote = notes.find(n => n.id === selectedNote);
     $: visibleFiles = files.filter(file =>
@@ -126,6 +136,7 @@
                 migrationPending = true;
             }
             await refresh(true);
+            await loadTeam();
             stopDashboardSubscription?.();
             stopDashboardSubscription = reactiveClient?.onUpdate(api.web.dashboard, {}, (data) => {
                 applyDashboard(data, true);
@@ -331,7 +342,7 @@
         finally { pagingSection = null; }
     }
 
-    function clearData() { taskSearchGeneration++; fileSearchGeneration++; if (taskSearchTimer) clearTimeout(taskSearchTimer); if (fileSearchTimer) clearTimeout(fileSearchTimer); taskSearchLoading = false; fileSearchLoading = false; taskSearchDone = { title: true, description: true }; fileSearchDone = true; search = ''; fileSearch = ''; fileTagFilter = ''; projects = []; projectLinks = []; knowledge = []; tasks = []; agents = []; events = []; notes = []; images = []; files = []; pageCursors = { projects: '', projectLinks: '', knowledge: '', tasks: '', agents: '', events: '', notes: '', images: '', files: '' }; pageDone = { projects: true, projectLinks: true, knowledge: true, tasks: true, agents: true, events: true, notes: true, images: true, files: true }; lastSync = null; selectedProject = ''; selectedNote = ''; selectedTask = null; taskComments = []; taskCommentsCursor = ''; taskCommentsDone = true; }
+    function clearData() { team = null; taskSearchGeneration++; fileSearchGeneration++; if (taskSearchTimer) clearTimeout(taskSearchTimer); if (fileSearchTimer) clearTimeout(fileSearchTimer); taskSearchLoading = false; fileSearchLoading = false; taskSearchDone = { title: true, description: true }; fileSearchDone = true; search = ''; fileSearch = ''; fileTagFilter = ''; projects = []; projectLinks = []; knowledge = []; tasks = []; agents = []; events = []; notes = []; images = []; files = []; pageCursors = { projects: '', projectLinks: '', knowledge: '', tasks: '', agents: '', events: '', notes: '', images: '', files: '' }; pageDone = { projects: true, projectLinks: true, knowledge: true, tasks: true, agents: true, events: true, notes: true, images: true, files: true }; lastSync = null; selectedProject = ''; selectedNote = ''; selectedTask = null; taskComments = []; taskCommentsCursor = ''; taskCommentsDone = true; }
     async function createProject() {
         if (!client || !newProjectName.trim()) return; busy = true;
         try { const p: any = await client.mutation(api.web.crearProyecto, { name: newProjectName.trim(), description: newProjectDescription.trim() }); newProjectName = ''; newProjectDescription = ''; selectedProject = p.id; await refresh(true, true); notice = 'Proyecto creado.'; }
@@ -487,7 +498,7 @@
     }
     async function createTask() {
         if (!client || !selectedProject || !newTaskTitle.trim()) return; busy = true;
-        try { await client.mutation(api.web.crearTarea, { projectId: selectedProject, title: newTaskTitle.trim(), description: newTaskDescription.trim() }); newTaskTitle = ''; newTaskDescription = ''; await refresh(true, true); notice = 'Tarea agregada.'; }
+        try { await client.mutation(api.web.crearTarea, { projectId: selectedProject, title: newTaskTitle.trim(), description: newTaskDescription.trim(), tags: parseTags(newTaskTags) }); newTaskTitle = ''; newTaskDescription = ''; newTaskTags = ''; await refresh(true, true); notice = 'Tarea agregada.'; }
         catch (e) { error = `No se pudo agregar la tarea: ${message(e)}`; } finally { busy = false; }
     }
     async function moveTask(task: any, next: Status) {
@@ -503,7 +514,7 @@
     }
     async function openTask(task: any) {
         if (!client) return;
-        selectedTask = { ...task }; taskComments = []; taskComment = '';
+        selectedTask = { ...task, tagsText: (task.tags ?? []).join(', ') }; taskComments = []; taskComment = '';
         try {
             const page = await client.query(api.web.comentariosTarea, { taskId: task.id, paginationOpts: { numItems: 100, cursor: null } });
             taskComments = page.items.reverse(); taskCommentsCursor = page.continueCursor; taskCommentsDone = page.isDone;
@@ -522,8 +533,9 @@
     async function saveTaskDetails() {
         if (!client || !selectedTask) return; busy = true;
         try {
-            await client.mutation(api.web.actualizarTarea, { taskId: selectedTask.id, status: selectedTask.status, title: selectedTask.title, description: selectedTask.description, priority: selectedTask.priority, assigneeAgentId: selectedTask.assigneeAgentId ?? null });
-            tasks = tasks.map(task => task.id === selectedTask.id ? { ...task, ...selectedTask } : task); notice = 'Tarea actualizada.';
+            await client.mutation(api.web.actualizarTarea, { taskId: selectedTask.id, status: selectedTask.status, title: selectedTask.title, description: selectedTask.description, priority: selectedTask.priority, assigneeAgentId: selectedTask.assigneeAgentId ?? null, tags: parseTags(selectedTask.tagsText ?? '') });
+            const { tagsText, ...saved } = selectedTask; const tags = parseTags(tagsText ?? '');
+            tasks = tasks.map(task => task.id === selectedTask.id ? { ...task, ...saved, tags } : task); selectedTask = { ...selectedTask, tags, tagsText: tags.join(', ') }; notice = 'Tarea actualizada.';
         } catch (e) { error = `No se pudo guardar la tarea: ${message(e)}`; } finally { busy = false; }
     }
     async function addTaskComment() {
@@ -643,43 +655,45 @@
             <div class="sidebar-scroll">
                 <div class="nav-label">WORKSPACE</div>
                 <nav class="workspace-nav" aria-label="Secciones del workspace">
-                    <button aria-label="Proyectos" title="Proyectos" class:active={section === 'projects'} on:click={() => section = 'projects'}><span>◫</span><span class="nav-text">Proyectos</span><span class="nav-count">{projects.length}</span></button>
-                    <button aria-label="Tablero" title="Tablero" class:active={section === 'board'} on:click={() => section = 'board'}><span>▦</span><span class="nav-text">Tablero</span></button>
-                    <button aria-label="Memoria" title="Memoria" class:active={section === 'notes'} on:click={() => section = 'notes'}><span>▤</span><span class="nav-text">Memoria</span><span class="nav-count">{notes.length}</span></button>
-                    <button aria-label="Imágenes" title="Imágenes" class:active={section === 'images'} on:click={() => section = 'images'}><span>▧</span><span class="nav-text">Imágenes</span><span class="nav-count">{images.length}</span></button>
-                    <button aria-label="Archivos" title="Archivos" class:active={section === 'files'} on:click={() => section = 'files'}><span>▤</span><span class="nav-text">Archivos</span><span class="nav-count">{files.length}</span></button>
-                    <button aria-label="Actividad" title="Actividad" class:active={section === 'activity'} on:click={() => section = 'activity'}><span>◷</span><span class="nav-text">Actividad</span></button>
-                    <button aria-label="Agentes" title="Agentes" class:active={section === 'agents'} on:click={() => section = 'agents'}><span>⌘</span><span class="nav-text">Agentes</span><span class="nav-count">{agents.length}</span></button>
-                    <button aria-label="Variables privadas" title="Variables privadas" class:active={section === 'secrets'} on:click={() => section = 'secrets'}><span>⚿</span><span class="nav-text">Claves privadas</span></button>
-                    <button aria-label="Mapa" title="Mapa" class:active={section === 'graph'} on:click={() => section = 'graph'}><span>◎</span><span class="nav-text">Mapa</span></button>
+                    <button aria-label="Proyectos" title="Proyectos" class:active={section === 'projects'} on:click={() => section = 'projects'}><span class="nav-icon"><Icon name="folder" /></span><span class="nav-text">Proyectos</span><span class="nav-count">{projects.length}</span></button>
+                    <button aria-label="Tablero" title="Tablero" class:active={section === 'board'} on:click={() => section = 'board'}><span class="nav-icon"><Icon name="board" /></span><span class="nav-text">Tablero</span></button>
+                    <button aria-label="Memoria" title="Memoria" class:active={section === 'notes'} on:click={() => section = 'notes'}><span class="nav-icon"><Icon name="memory" /></span><span class="nav-text">Memoria</span><span class="nav-count">{notes.length}</span></button>
+                    <button aria-label="Imágenes" title="Imágenes" class:active={section === 'images'} on:click={() => section = 'images'}><span class="nav-icon"><Icon name="image" /></span><span class="nav-text">Imágenes</span><span class="nav-count">{images.length}</span></button>
+                    <button aria-label="Archivos" title="Archivos" class:active={section === 'files'} on:click={() => section = 'files'}><span class="nav-icon"><Icon name="file" /></span><span class="nav-text">Archivos</span><span class="nav-count">{files.length}</span></button>
+                    <button aria-label="Actividad" title="Actividad" class:active={section === 'activity'} on:click={() => section = 'activity'}><span class="nav-icon"><Icon name="activity" /></span><span class="nav-text">Actividad</span></button>
+                    <button aria-label="Agentes" title="Agentes" class:active={section === 'agents'} on:click={() => section = 'agents'}><span class="nav-icon"><Icon name="agents" /></span><span class="nav-text">Agentes</span><span class="nav-count">{agents.length}</span></button>
+                    <button aria-label="Equipo" title="Equipo" class:active={section === 'team'} on:click={() => section = 'team'}><span class="nav-icon"><Icon name="team" /></span><span class="nav-text">Equipo</span>{#if team?.members.length}<span class="nav-count">{team.members.length + 1}</span>{/if}</button>
+                    {#if !team || team.current.role === 'owner'}<button aria-label="Variables privadas" title="Variables privadas" class:active={section === 'secrets'} on:click={() => section = 'secrets'}><span class="nav-icon"><Icon name="key" /></span><span class="nav-text">Claves privadas</span></button>{/if}
+                    <button aria-label="Mapa" title="Mapa" class:active={section === 'graph'} on:click={() => section = 'graph'}><span class="nav-icon"><Icon name="map" /></span><span class="nav-text">Mapa</span></button>
                 </nav>
                 <section class="sidebar-projects"><div class="nav-label">PROYECTOS</div>{#each projects.slice(0, 12) as project (project.id)}<button class="project-link" class:project-active={selectedProject === project.id} title={project.name} on:click={() => { selectedProject = project.id; section = 'board'; }}><i class="project-dot"></i>{project.name}</button>{/each}{#if !projects.length}<small class="side-empty">Aún no hay proyectos</small>{/if}</section>
             </div>
+            {#if team && team.workspaces.length > 1}<label class="ws-switch"><span>Workspace</span><select aria-label="Cambiar de workspace" value={team.current.id} on:change={(e) => void switchWorkspace((e.currentTarget as HTMLSelectElement).value)}>{#each team.workspaces as w (w.id)}<option value={w.id}>{w.name}{w.role === 'editor' ? ' (colaborador)' : ''}</option>{/each}</select></label>{/if}
             <div class="sidebar-bottom"><button class="sidebar-user" on:click={() => void openProfile()}><span class="pilot-avatar">{userEmail.slice(0, 1).toUpperCase()}</span><span class="pilot-text"><strong>{userEmail}</strong><small>Mi perfil</small></span></button><span class="cloud-indicator" class:cloud-on={connected} title={connected ? 'Sincronizado con Convex' : 'Sin conexión'}>●</span></div>
         </aside>
         <div class="main-area">
-            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'files' ? 'Archivos' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'secrets' ? 'Claves privadas' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? '● Sincronizado en vivo' : '○ Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
+            <header class="topbar"><div class="breadcrumbs"><span>mitpad</span><span class="crumb-sep">/</span><strong>{section === 'board' ? 'Tablero' : section === 'notes' ? 'Memoria' : section === 'images' ? 'Imágenes' : section === 'files' ? 'Archivos' : section === 'activity' ? 'Actividad' : section === 'agents' ? 'Agentes' : section === 'team' ? 'Equipo' : section === 'secrets' ? 'Claves privadas' : section === 'graph' ? 'Mapa' : 'Proyectos'}</strong></div><div class="top-actions"><span class="sync-pill" class:sync-offline={!connected}>{connected ? 'Sincronizado en vivo' : 'Reconectando'}</span><button class="secondary" on:click={() => void refresh()} disabled={busy}>{busy ? 'Actualizando…' : 'Actualizar'}</button><button class="avatar-button" on:click={() => void openProfile()}>Perfil</button><button class="secondary" on:click={() => void signOut()}>Salir</button></div></header>
             {#if error}<div class="alert error">{error}</div>{/if}{#if notice}<div class="alert notice">{notice}</div>{/if}
             <section class="dashboard">
         {#if !connected}<div class="reconnect-banner"><strong>Workspace sin actualizar</strong><span>Conservamos esta vista y volveremos a intentarlo automáticamente.</span><button on:click={() => void refresh()} disabled={busy}>{busy ? 'Conectando…' : 'Reintentar ahora'}</button></div>{/if}<div class="intro"><div><div class="eyebrow">SUPERVISIÓN DEL WORKSPACE</div><h1>Proyectos y agentes, de un vistazo</h1><p>Monitorea cambios, notas y archivos desde Convex.</p></div><div class="last-sync"><span>Última consulta</span><strong>{lastSync ? date(lastSync) : 'Conectando…'}</strong><small>{projects.length} proyectos · {tasks.length} tareas · {agents.length} agentes</small></div></div>
         {#if section === 'board'}
             <div class="summary-grid"><article><span>Proyectos</span><strong>{projects.length}</strong><small>{projects.filter(p => p.status === 'active').length} activos</small></article><article><span>Tareas abiertas</span><strong>{tasks.filter(t => t.status !== 'done').length}</strong><small>{tasks.filter(t => t.status === 'blocked').length} bloqueadas</small></article><article><span>Agentes</span><strong>{agents.length}</strong><small>{agents.filter(a => a.active).length} activos</small></article><article><span>Actividad</span><strong>{events.length}</strong><small>eventos recientes</small></article></div>
             <div class="workspace-grid"><section class="work-panel"><div class="panel-head"><div><div class="eyebrow">SEGUIMIENTO</div><h2>{selectedProjectName}</h2></div><select aria-label="Filtrar por proyecto" bind:value={selectedProject}><option value="">Todos los proyectos</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div>
-                <div class="filters"><select aria-label="Filtrar por estado" bind:value={taskStatusFilter}><option value="all">Todos los estados</option>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><select aria-label="Filtrar por agente" bind:value={agentFilter}><option value="all">Todos los agentes</option><option value="unassigned">Sin asignar</option>{#each agents as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select><select aria-label="Filtrar por prioridad" bind:value={priorityFilter}><option value="all">Todas las prioridades</option>{#each ['urgent','high','medium','low'] as p}<option value={p}>{p}</option>{/each}</select><input bind:value={search} on:input={scheduleTaskSearch} placeholder="Buscar tareas en todo el workspace…" aria-label="Buscar tareas en todo el workspace" /></div>
-                {#if selectedProject}<form class="task-create" on:submit|preventDefault={createTask}><input bind:value={newTaskTitle} placeholder="Nueva tarea…" required /><input bind:value={newTaskDescription} placeholder="Descripción opcional" /><button disabled={busy}>＋ Agregar tarea</button></form>{/if}
+                <div class="filters"><select aria-label="Filtrar por estado" bind:value={taskStatusFilter}><option value="all">Todos los estados</option>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><select aria-label="Filtrar por agente" bind:value={agentFilter}><option value="all">Todos los agentes</option><option value="unassigned">Sin asignar</option>{#each agents as a (a.id)}<option value={a.id}>{a.name}</option>{/each}</select><select aria-label="Filtrar por prioridad" bind:value={priorityFilter}><option value="all">Todas las prioridades</option>{#each ['urgent','high','medium','low'] as p}<option value={p}>{p}</option>{/each}</select>{#if allTags.length}<select aria-label="Filtrar por etiqueta" bind:value={tagFilter}><option value="all">Todas las etiquetas</option>{#each allTags as tag}<option value={tag}>{tag}</option>{/each}</select>{/if}<input bind:value={search} on:input={scheduleTaskSearch} placeholder="Buscar tareas en todo el workspace…" aria-label="Buscar tareas en todo el workspace" /></div>
+                {#if selectedProject}<form class="task-create" on:submit|preventDefault={createTask}><input bind:value={newTaskTitle} placeholder="Nueva tarea…" required /><input bind:value={newTaskDescription} placeholder="Descripción opcional" /><input bind:value={newTaskTags} placeholder="Etiquetas (separadas por coma)" aria-label="Etiquetas de la tarea" list="task-tag-options" /><button disabled={busy}>+ Agregar tarea</button><datalist id="task-tag-options">{#each allTags as tag}<option value={tag}></option>{/each}</datalist></form>{/if}
                 <div class="task-drop-targets" aria-label="Mover tarea arrastrándola a un estado">{#each [{id:'todo',label:'Pendiente'},{id:'in_progress',label:'En curso'},{id:'done',label:'Hecho'}] as lane}<button type="button" on:dragover={(event) => event.preventDefault()} on:drop={(event) => dropTask(lane.id as Status,event)}><span>{lane.label}</span></button>{/each}</div>
-                {#if visibleTasks.length}<div class="task-list">{#each visibleTasks as t (t.id)}<article class="task" draggable="true" on:dragstart={(event) => event.dataTransfer?.setData('text/plain', t.id)}><div class="task-main"><span class="priority" class:urgent={t.priority === 'urgent'}></span><div><strong>{t.title}</strong><p>{t.description || 'Sin descripción'}</p><small>{projects.find(p => p.id === t.projectId)?.name ?? 'Proyecto'} · {t.assigneeAgentId ? agents.find(a => a.id === t.assigneeAgentId)?.name ?? 'Agente' : t.createdByType === 'agent' ? 'Creada por agente' : 'Sin asignar'}</small></div></div><div class="task-actions"><select aria-label={`Estado de ${t.title}`} value={t.status} on:change={e => void moveTask(t, (e.currentTarget as HTMLSelectElement).value as Status)}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><button class="task-open" on:click={() => void openTask(t)}>Detalles</button></div></article>{/each}</div>{:else if taskSearchLoading}<div class="empty">Buscando en las tareas del workspace…</div>{:else}<div class="empty">No hay tareas con estos filtros.</div>{/if}{#if taskHasMore}<PaginationFooter label="tareas" help={search.trim() ? "Resultados encontrados en el workspace; carga más para continuar." : "Continúa para cargar más tareas."} count={tasks.length} loading={taskSearchLoading || pagingSection === "tasks"} error={pageError} onLoadMore={() => void loadMore("tasks")} />{/if}
-                <form class="create-project" on:submit|preventDefault={createProject}><strong>＋ Nuevo proyecto</strong><input bind:value={newProjectName} placeholder="Nombre" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>Crear</button></form>
+                {#if visibleTasks.length}<div class="task-list">{#each visibleTasks as t (t.id)}<article class="task" draggable="true" on:dragstart={(event) => event.dataTransfer?.setData('text/plain', t.id)}><div class="task-main"><span class="priority" class:urgent={t.priority === 'urgent'}></span><div><strong>{t.title}</strong><p>{t.description || 'Sin descripción'}</p>{#if t.tags?.length}<div class="task-tags">{#each t.tags as tag}<button type="button" class="tag-chip" class:active={tagFilter === tag} title="Filtrar por {tag}" on:click={() => tagFilter = tagFilter === tag ? 'all' : tag}>{tag}</button>{/each}</div>{/if}<small>{projects.find(p => p.id === t.projectId)?.name ?? 'Proyecto'} · {t.assigneeAgentId ? agents.find(a => a.id === t.assigneeAgentId)?.name ?? 'Agente' : t.createdByType === 'agent' ? 'Creada por agente' : 'Sin asignar'}</small></div></div><div class="task-actions"><select aria-label={`Estado de ${t.title}`} value={t.status} on:change={e => void moveTask(t, (e.currentTarget as HTMLSelectElement).value as Status)}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select><button class="task-open" on:click={() => void openTask(t)}>Detalles</button></div></article>{/each}</div>{:else if taskSearchLoading}<div class="empty">Buscando en las tareas del workspace…</div>{:else}<div class="empty">No hay tareas con estos filtros.</div>{/if}{#if taskHasMore}<PaginationFooter label="tareas" help={search.trim() ? "Resultados encontrados en el workspace; carga más para continuar." : "Continúa para cargar más tareas."} count={tasks.length} loading={taskSearchLoading || pagingSection === "tasks"} error={pageError} onLoadMore={() => void loadMore("tasks")} />{/if}
+                <form class="create-project" on:submit|preventDefault={createProject}><strong>+ Nuevo proyecto</strong><input bind:value={newProjectName} placeholder="Nombre" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>Crear</button></form>
             </section><aside class="side-column"><section class="side-panel"><div class="eyebrow">AGENTES</div><h2>Equipo de trabajo</h2>{#each agents as a (a.id)}<div class="agent"><span class:online={a.active}></span><div><strong>{a.name}</strong><small>{a.model || a.clientType} · {a.active ? 'Activo' : 'Inactivo'}</small></div>{#if a.lastSeenAt}<time>{date(a.lastSeenAt)}</time>{/if}</div>{/each}{#if !agents.length}<p class="empty-small">Aún no hay agentes registrados.</p>{/if}</section><section class="side-panel"><div class="eyebrow">ACTIVIDAD</div><h2>Últimos movimientos</h2><select class="activity-filter" aria-label="Filtrar actividad" bind:value={activityFilter}><option value="all">Todos</option><option value="agent">Agentes</option><option value="human">Personas</option></select><div class="events">{#each events.filter(e => activityFilter === 'all' || e.actorType === activityFilter).slice(0, 12) as e (e.id)}<article><i class:agent-event={e.actorType === 'agent'}></i><div><strong>{e.summary}</strong><small>{e.actorType === 'agent' ? `Agente ${e.actorId}` : 'Piloto'} · {date(e.createdAt)}</small></div></article>{/each}</div></section></aside></div>
-        {:else if section === 'projects'}<section class="work-panel project-library"><div class="panel-head"><div><div class="eyebrow">ESPACIOS DE TRABAJO</div><h2>Proyectos</h2></div><span>{projects.length} cargados</span></div><form class="create-project" on:submit|preventDefault={createProject}><input bind:value={newProjectName} placeholder="Nombre del proyecto" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>＋ Crear proyecto</button></form><div class="project-grid">{#each projects as p (p.id)}<article class="project-card" class:selected={selectedProject === p.id}><button class="project-open" on:click={() => { selectedProject = p.id; section = 'board'; }}><span class="project-status" class:archived={p.status === 'archived'}>{p.status === 'active' ? 'Activo' : 'Archivado'}</span><strong>{p.name}</strong><p>{p.description || 'Sin descripción'}</p><small>{tasks.filter(t => t.projectId === p.id).length} tareas · {knowledge.filter(k => k.projectId === p.id).length} elementos de contexto</small></button><div class="project-card-actions"><button class="project-edit-button" on:click={() => startProjectEdit(p)}>Editar</button><button class="project-delete-button" on:click={() => void deleteProject(p)} disabled={busy}>Eliminar</button></div></article>{/each}{#if !projects.length}<div class="empty">Crea tu primer proyecto para empezar.</div>{/if}</div>{#if !pageDone.projects}<PaginationFooter label="proyectos" count={projects.length} loading={pagingSection === "projects"} error={pageError} onLoadMore={() => void loadMore("projects")} />{/if}{#if editingProject}<form class="project-edit-form" on:submit|preventDefault={saveProjectEdit}><div class="eyebrow">EDITAR PROYECTO</div><input bind:value={editProjectName} placeholder="Nombre" required /><textarea bind:value={editProjectDescription} placeholder="Descripción" rows="3"></textarea><div><button class="primary" disabled={busy}>Guardar cambios</button><button type="button" class="subtle-button" on:click={() => editingProject = ''}>Cancelar</button></div></form>{/if}<section class="project-relations"><div class="eyebrow">CONEXIONES</div><h3>Relaciones entre proyectos</h3><form class="relation-form" on:submit|preventDefault={createProjectRelation}><select aria-label="Proyecto de origen" bind:value={relationSource}><option value="">Desde…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Proyecto relacionado" bind:value={relationTarget}><option value="">Hacia…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><input bind:value={relationDescription} placeholder="Qué los relaciona" /><button disabled={!relationSource || !relationTarget || relationSource === relationTarget}>Vincular</button></form>{#each projectLinks as link (link.id)}<div class="relation-row"><span>{projects.find(p => p.id === link.sourceProjectId)?.name ?? 'Proyecto'} ↔ {projects.find(p => p.id === link.targetProjectId)?.name ?? 'Proyecto'}</span><small>{link.description || link.relationType}</small><button on:click={() => void deleteProjectRelation(link)} aria-label="Quitar relación">×</button></div>{/each}{#if !pageDone.projectLinks}<PaginationFooter label="relaciones" count={projectLinks.length} loading={pagingSection === "projectLinks"} error={pageError} onLoadMore={() => void loadMore("projectLinks")} />{/if}</section></section>
-        {:else if section === 'notes'}<div class="content-grid"><section class="side-panel note-list"><div class="eyebrow">MEMORIA</div><h2>Notas conservadas</h2>{#each notes as n (n.id)}<div class="note-row-wrap"><button class="note-row" class:selected={selectedNote === n.id} on:click={() => chooseNote(n)}><strong>{n.title || 'Sin título'}</strong><small>{n.status === 'attended' ? 'Atendida' : 'Abierta'} · {projects.find(p => p.id === n.projectId)?.name ?? 'Sin proyecto'}</small></button><button class="note-delete" aria-label={`Eliminar nota ${n.title || 'sin título'}`} title="Eliminar nota" on:click={() => void deleteNote(n)} disabled={busy}>×</button></div>{/each}{#if !pageDone.notes}<PaginationFooter label="notas" count={notes.length} loading={pagingSection === "notes"} error={pageError} onLoadMore={() => void loadMore("notes")} />{/if}<button class="new-note" on:click={() => chooseNote()}>＋ Nueva nota</button></section><section class="work-panel note-editor"><div class="eyebrow">{selectedNote ? 'EDITAR NOTA' : 'NUEVA NOTA'}</div><input class="note-title" bind:value={noteTitle} placeholder="Título" /><div class="note-meta"><select aria-label="Proyecto asociado" bind:value={noteProject}><option value="">Sin proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Estado de nota" bind:value={noteStatus}><option value="open">Abierta</option><option value="attended">Atendida</option></select></div><textarea bind:value={noteContent} placeholder="Escribe contexto útil para ti y tus agentes…"></textarea><button class="primary" on:click={() => void saveNote()} disabled={busy}>Guardar nota</button>{#if selectedNote}<label class="upload note-upload">＋ Adjuntar imagen<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0], selectedNote)} /></label><div class="note-attachments">{#each images.filter(image => image.noteId === selectedNote) as image (image.id)}<figure><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><figcaption>{image.filename}<button on:click={() => void deleteImage(image)} aria-label={`Eliminar ${image.filename}`}>×</button></figcaption></figure>{/each}</div>{/if}</section></div>
-        {:else if section === 'images'}<section class="work-panel image-library"><div class="panel-head"><div><div class="eyebrow">ARCHIVOS DEL PROYECTO</div><h2>Imágenes</h2></div><select aria-label="Proyecto para imágenes" bind:value={selectedProject}><option value="">Elige un proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p>Las imágenes se guardan en Convex Storage y quedan vinculadas al proyecto seleccionado. Límite: 10 MB por archivo.</p><label class="upload">{uploading ? 'Subiendo…' : '＋ Subir imagen'}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={!selectedProject || uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0])} /></label><div class="image-grid">{#each images.filter(i => !selectedProject || i.projectId === selectedProject) as image (image.id)}<article><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><div><strong>{image.filename}</strong><small>{projects.find(p => p.id === image.projectId)?.name ?? 'Proyecto'} · {(image.size / 1024).toFixed(0)} KB</small><button on:click={() => void deleteImage(image)}>Quitar</button></div></article>{/each}</div>{#if !images.length}<div class="empty">Todavía no hay imágenes.</div>{/if}{#if !pageDone.images}<PaginationFooter label="imágenes" count={images.length} loading={pagingSection === "images"} error={pageError} onLoadMore={() => void loadMore("images")} />{/if}</section>
+        {:else if section === 'projects'}<section class="work-panel project-library"><div class="panel-head"><div><div class="eyebrow">ESPACIOS DE TRABAJO</div><h2>Proyectos</h2></div><span>{projects.length} cargados</span></div><form class="create-project" on:submit|preventDefault={createProject}><input bind:value={newProjectName} placeholder="Nombre del proyecto" required /><input bind:value={newProjectDescription} placeholder="Objetivo o contexto" /><button disabled={busy}>+ Crear proyecto</button></form><div class="project-grid">{#each projects as p (p.id)}<article class="project-card" class:selected={selectedProject === p.id}><button class="project-open" on:click={() => { selectedProject = p.id; section = 'board'; }}><span class="project-status" class:archived={p.status === 'archived'}>{p.status === 'active' ? 'Activo' : 'Archivado'}</span><strong>{p.name}</strong><p>{p.description || 'Sin descripción'}</p><small>{tasks.filter(t => t.projectId === p.id).length} tareas · {knowledge.filter(k => k.projectId === p.id).length} elementos de contexto</small></button><div class="project-card-actions"><button class="project-edit-button" on:click={() => startProjectEdit(p)}>Editar</button><button class="project-delete-button" on:click={() => void deleteProject(p)} disabled={busy}>Eliminar</button></div></article>{/each}{#if !projects.length}<div class="empty">Crea tu primer proyecto para empezar.</div>{/if}</div>{#if !pageDone.projects}<PaginationFooter label="proyectos" count={projects.length} loading={pagingSection === "projects"} error={pageError} onLoadMore={() => void loadMore("projects")} />{/if}{#if editingProject}<form class="project-edit-form" on:submit|preventDefault={saveProjectEdit}><div class="eyebrow">EDITAR PROYECTO</div><input bind:value={editProjectName} placeholder="Nombre" required /><textarea bind:value={editProjectDescription} placeholder="Descripción" rows="3"></textarea><div><button class="primary" disabled={busy}>Guardar cambios</button><button type="button" class="subtle-button" on:click={() => editingProject = ''}>Cancelar</button></div></form>{/if}<section class="project-relations"><div class="eyebrow">CONEXIONES</div><h3>Relaciones entre proyectos</h3><form class="relation-form" on:submit|preventDefault={createProjectRelation}><select aria-label="Proyecto de origen" bind:value={relationSource}><option value="">Desde…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Proyecto relacionado" bind:value={relationTarget}><option value="">Hacia…</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><input bind:value={relationDescription} placeholder="Qué los relaciona" /><button disabled={!relationSource || !relationTarget || relationSource === relationTarget}>Vincular</button></form>{#each projectLinks as link (link.id)}<div class="relation-row"><span>{projects.find(p => p.id === link.sourceProjectId)?.name ?? 'Proyecto'} ↔ {projects.find(p => p.id === link.targetProjectId)?.name ?? 'Proyecto'}</span><small>{link.description || link.relationType}</small><button on:click={() => void deleteProjectRelation(link)} aria-label="Quitar relación">×</button></div>{/each}{#if !pageDone.projectLinks}<PaginationFooter label="relaciones" count={projectLinks.length} loading={pagingSection === "projectLinks"} error={pageError} onLoadMore={() => void loadMore("projectLinks")} />{/if}</section></section>
+        {:else if section === 'notes'}<div class="content-grid"><section class="side-panel note-list"><div class="eyebrow">MEMORIA</div><h2>Notas conservadas</h2>{#each notes as n (n.id)}<div class="note-row-wrap"><button class="note-row" class:selected={selectedNote === n.id} on:click={() => chooseNote(n)}><strong>{n.title || 'Sin título'}</strong><small>{n.status === 'attended' ? 'Atendida' : 'Abierta'} · {projects.find(p => p.id === n.projectId)?.name ?? 'Sin proyecto'}</small></button><button class="note-delete" aria-label={`Eliminar nota ${n.title || 'sin título'}`} title="Eliminar nota" on:click={() => void deleteNote(n)} disabled={busy}>×</button></div>{/each}{#if !pageDone.notes}<PaginationFooter label="notas" count={notes.length} loading={pagingSection === "notes"} error={pageError} onLoadMore={() => void loadMore("notes")} />{/if}<button class="new-note" on:click={() => chooseNote()}>+ Nueva nota</button></section><section class="work-panel note-editor"><div class="eyebrow">{selectedNote ? 'EDITAR NOTA' : 'NUEVA NOTA'}</div><input class="note-title" bind:value={noteTitle} placeholder="Título" /><div class="note-meta"><select aria-label="Proyecto asociado" bind:value={noteProject}><option value="">Sin proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select><select aria-label="Estado de nota" bind:value={noteStatus}><option value="open">Abierta</option><option value="attended">Atendida</option></select></div><textarea bind:value={noteContent} placeholder="Escribe contexto útil para ti y tus agentes…"></textarea><button class="primary" on:click={() => void saveNote()} disabled={busy}>Guardar nota</button>{#if selectedNote}<label class="upload note-upload">+ Adjuntar imagen<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0], selectedNote)} /></label><div class="note-attachments">{#each images.filter(image => image.noteId === selectedNote) as image (image.id)}<figure><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><figcaption>{image.filename}<button on:click={() => void deleteImage(image)} aria-label={`Eliminar ${image.filename}`}>×</button></figcaption></figure>{/each}</div>{/if}</section></div>
+        {:else if section === 'images'}<section class="work-panel image-library"><div class="panel-head"><div><div class="eyebrow">ARCHIVOS DEL PROYECTO</div><h2>Imágenes</h2></div><select aria-label="Proyecto para imágenes" bind:value={selectedProject}><option value="">Elige un proyecto</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p>Las imágenes se guardan en Convex Storage y quedan vinculadas al proyecto seleccionado. Límite: 10 MB por archivo.</p><label class="upload">{uploading ? 'Subiendo…' : '+ Subir imagen'}<input type="file" accept="image/jpeg,image/png,image/webp,image/gif" disabled={!selectedProject || uploading} on:change={e => void uploadImage((e.currentTarget as HTMLInputElement).files?.[0])} /></label><div class="image-grid">{#each images.filter(i => !selectedProject || i.projectId === selectedProject) as image (image.id)}<article><a href={image.url ?? '#'} target="_blank" rel="noreferrer"><img src={image.url ?? ''} alt={image.filename} loading="lazy" /></a><div><strong>{image.filename}</strong><small>{projects.find(p => p.id === image.projectId)?.name ?? 'Proyecto'} · {(image.size / 1024).toFixed(0)} KB</small><button on:click={() => void deleteImage(image)}>Quitar</button></div></article>{/each}</div>{#if !images.length}<div class="empty">Todavía no hay imágenes.</div>{/if}{#if !pageDone.images}<PaginationFooter label="imágenes" count={images.length} loading={pagingSection === "images"} error={pageError} onLoadMore={() => void loadMore("images")} />{/if}</section>
         {:else if section === 'files'}
             <section class="work-panel image-library">
                 <div class="panel-head"><div><div class="eyebrow">BIBLIOTECA DEL WORKSPACE</div><h2>Archivos</h2></div><select aria-label="Filtrar archivos por proyecto" bind:value={selectedProject}><option value="">Todo el workspace</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div>
                 <p>Sube PDF, documentos, hojas de cálculo, presentaciones, CSV o texto. Hasta 25 MB por archivo y 1 GB por workspace.</p>
                 <div class="file-search-row"><input bind:value={fileSearch} on:input={scheduleFileSearch} aria-label="Buscar archivos en todo el workspace" placeholder="Buscar archivos por nombre…" /><input bind:value={fileTagFilter} aria-label="Filtrar por etiqueta en los archivos cargados" placeholder="Filtrar etiquetas cargadas…" /></div>
-                <label class="upload">{uploading ? 'Subiendo…' : '＋ Subir archivo'}<input bind:this={workspaceFileInput} type="file" accept=".pdf,.txt,.md,.markdown,.csv,.json,.rtf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.zip" disabled={uploading} on:change={e => void uploadWorkspaceFile((e.currentTarget as HTMLInputElement).files?.[0])} /></label>
+                <label class="upload">{uploading ? 'Subiendo…' : '+ Subir archivo'}<input bind:this={workspaceFileInput} type="file" accept=".pdf,.txt,.md,.markdown,.csv,.json,.rtf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.odp,.zip" disabled={uploading} on:change={e => void uploadWorkspaceFile((e.currentTarget as HTMLInputElement).files?.[0])} /></label>
                 <div class="file-list">
                     {#each visibleFiles as file (file.id)}
                         <article>
@@ -698,14 +712,15 @@
                 {#if !visibleFiles.length}<div class="empty">{fileSearchLoading ? "Buscando archivos en el workspace…" : "No hay archivos que coincidan con la búsqueda y los filtros."}</div>{/if}{#if fileHasMore}<PaginationFooter label="archivos" help={fileSearch.trim() ? "Coincidencias por nombre en todo el workspace." : "Los filtros de etiqueta se aplican a los archivos cargados."} count={files.length} loading={fileSearchLoading || pagingSection === "files"} error={pageError} onLoadMore={() => void loadMore("files")} />{/if}
             </section>
         {:else if section === 'activity'}<section class="work-panel"><div class="panel-head"><div><div class="eyebrow">HISTORIAL</div><h2>Actividad reciente</h2></div><select class="activity-filter" aria-label="Filtrar actividad" bind:value={activityFilter}><option value="all">Todas</option><option value="agent">Agentes</option><option value="human">Personas</option></select></div><div class="events">{#each events.filter(e => activityFilter === 'all' || e.actorType === activityFilter) as e (e.id)}<article><i class:agent-event={e.actorType === 'agent'}></i><div><strong>{e.summary}</strong><small>{e.actorType === 'agent' ? `Agente ${e.actorId}` : 'Persona'} · {date(e.createdAt)}</small></div></article>{/each}{#if !events.length}<div class="empty">Aún no hay actividad registrada.</div>{/if}</div>{#if !pageDone.events}<PaginationFooter label="eventos" count={events.length} loading={pagingSection === "events"} error={pageError} onLoadMore={() => void loadMore("events")} />{/if}</section>
+        {:else if section === 'team'}{#if client && team}<TeamPanel {client} {team} onChanged={teamChanged} />{:else}<div class="empty">Cargando el equipo…</div>{/if}
         {:else if section === 'secrets'}{#if client}<PrivateVault {client} />{/if}
         {:else if section === 'agents'}<section class="work-panel"><div class="eyebrow">EQUIPO Y CONEXIONES</div><h2>Conecta tu agente en un momento</h2><p class="graph-hint">Elige Codex, crea una credencial y copia una configuración lista para pegar. Después probamos la conexión real con el servidor MCP y una lectura de tus proyectos.</p><div class="agent-connect-guide"><span class="guide-step">01</span><div><strong>Elige tu cliente</strong><p>La guía se adapta a Codex, OpenCode y otros clientes MCP.</p></div><span class="guide-step">02</span><div><strong>Crea una clave exclusiva</strong><p>Puedes revocarla cuando quieras; Mitpad conserva solo su hash.</p></div><span class="guide-step">03</span><div><strong>Prueba antes de usar</strong><p>Confirmamos el saludo MCP, la lista de herramientas y una lectura real.</p></div></div><form class="remote-agent-form" on:submit|preventDefault={createRemoteAgent}><label>Cliente<select bind:value={remoteAgentClient}><option value="codex">Codex</option><option value="opencode">OpenCode</option><option value="claude-code">Claude Code</option><option value="cursor">Cursor</option><option value="mcp">Otro cliente MCP</option></select></label><label>Nombre del agente<input bind:value={remoteAgentName} maxlength="100" required placeholder="Codex personal" /></label><label>Modelo<input bind:value={remoteAgentModel} maxlength="120" placeholder="auto" /></label><label>Proveedor<input bind:value={remoteAgentProvider} maxlength="80" placeholder="auto" /></label><button disabled={busy}>Crear y configurar</button></form>{#if remoteAgentKey}<div class="remote-agent-secret"><div><strong>Ahora configura Codex y comprueba la conexión</strong><p>La opción de Codex copia una tabla TOML lista para añadir a tu configuración local. Incluye la clave secreta: no pegues ese contenido en un repositorio ni lo compartas.</p></div><code>{remoteAgentKey}</code>{#if remoteAgentCheck}<p class="agent-key-check">{remoteAgentCheck}</p>{/if}<div class="agent-secret-actions"><button on:click={() => void copyRemoteAgentKey()}>Copiar solo la clave</button><button class="subtle-button" on:click={() => void copyRemoteAgentSetup()}>{remoteAgentClient === 'codex' ? 'Copiar configuración de Codex' : 'Copiar guía MCP'}</button><button class="subtle-button" on:click={() => void validateRemoteAgentKey()} disabled={remoteAgentChecking}>{remoteAgentChecking ? 'Probando servidor MCP…' : 'Probar conexión completa'}</button><button class="subtle-button" on:click={() => { remoteAgentKey = ''; remoteAgentCheck = ''; }}>Ocultar clave</button></div></div>{/if}<div class="agent-list-head"><div class="eyebrow agent-list-label">AGENTES REGISTRADOS</div>{#if idleAgents.length}<button class="revoke-agent" on:click={() => void removeIdleAgents()}>Eliminar sin conexión ({idleAgents.length})</button>{/if}</div>{#if editingAgent}<form class="agent-edit-form" on:submit|preventDefault={saveAgentEdit}><strong>Editar {editingAgent.name}</strong><label>Nombre<input bind:value={editAgentName} required maxlength="100" /></label><label>Modelo<input bind:value={editAgentModel} maxlength="120" /></label><label>Proveedor<input bind:value={editAgentProvider} maxlength="80" /></label><label>Cliente<input bind:value={editAgentClient} maxlength="80" /></label><div><button class="primary" disabled={busy}>Guardar</button><button type="button" class="secondary" on:click={() => editingAgent = null}>Cancelar</button></div></form>{/if}{#each agents as a (a.id)}<div class="agent"><span class:online={a.active}></span><div><strong>{a.name}{a.credentialMode === 'mcp' ? ' · MCP' : ''}</strong><small>{a.model || a.clientType} · {a.active ? 'Activo' : 'Revocado'}{a.lastSeenAt ? '' : ' · sin conexión'}</small></div>{#if a.lastSeenAt}<time>{date(a.lastSeenAt)}</time>{/if}<button class="agent-edit-button" on:click={() => beginAgentEdit(a)}>Editar</button>{#if a.active && !isMeido(a)}<button class="revoke-agent" on:click={() => void revokeRemoteAgent(a)}>Desactivar</button>{/if}{#if !isMeido(a)}<button class="revoke-agent" on:click={() => void removeRemoteAgent(a)}>Eliminar</button>{/if}</div>{/each}{#if !agents.length}<div class="empty">Aún no hay agentes. Crea una clave MCP para conectar el primero.</div>{/if}{#if !pageDone.agents}<PaginationFooter label="agentes" count={agents.length} loading={pagingSection === "agents"} error={pageError} onLoadMore={() => void loadMore("agents")} />{/if}</section>
-        {:else}<section class="work-panel graph-workspace"><div class="panel-head"><div><div class="eyebrow">MAPA DEL WORKSPACE</div><h2>Grafo 3D</h2></div><select aria-label="Proyecto visible en el mapa" bind:value={selectedProject}><option value="">Todos los proyectos</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p class="graph-hint">{selectedProject ? 'Vista del proyecto: tareas y conocimiento quedan agrupados alrededor de su proyecto.' : 'Vista general: muestra proyectos y sus relaciones. Elige un proyecto para explorar sus tareas y conocimiento.'} Arrastra para orbitar y usa la rueda para acercar.</p><div class="graph-canvas"><ThreeDGraph nodes={graphNodes} links={graphLinks} onSelect={(node) => selectedGraphNode = node} /></div>{#if !pageDone.knowledge}<PaginationFooter label="elementos de contexto" count={knowledge.length} loading={pagingSection === "knowledge"} error={pageError} onLoadMore={() => void loadMore("knowledge")} />{/if}{#if selectedGraphNode}<aside class="graph-detail"><strong>{selectedGraphNode.label}</strong><span>{selectedGraphNode.kind === 'project' ? 'Proyecto' : selectedGraphNode.kind === 'task' ? 'Tarea' : selectedGraphNode.knowledgeKind}</span>{#if selectedGraphNode.summary}<p>{selectedGraphNode.summary}</p>{/if}{#if selectedGraphNode.source}<small>{selectedGraphNode.source}</small>{/if}</aside>{/if}</section>{/if}
+        {:else}<section class="work-panel graph-workspace"><div class="panel-head"><div><div class="eyebrow">MAPA DEL WORKSPACE</div><h2>Grafo 3D</h2></div><select aria-label="Proyecto visible en el mapa" bind:value={selectedProject}><option value="">Todos los proyectos</option>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select></div><p class="graph-hint">{selectedProject ? 'Vista del proyecto: tareas y conocimiento quedan agrupados alrededor de su proyecto.' : 'Vista general: muestra proyectos y sus relaciones. Elige un proyecto para explorar sus tareas y conocimiento.'} Arrastra para orbitar y usa la rueda para acercar.</p><div class="graph-canvas"><ThreeDGraph nodes={graphNodes} links={graphLinks} onSelect={(node) => selectedGraphNode = node} /></div>{#if !pageDone.knowledge}<PaginationFooter label="elementos de contexto" count={knowledge.length} loading={pagingSection === "knowledge"} error={pageError} onLoadMore={() => void loadMore("knowledge")} />{/if}{#if selectedGraphNode}<aside class="graph-detail" aria-live="polite"><header><span class="detail-kind">{selectedGraphNode.kind === 'project' ? 'Proyecto' : selectedGraphNode.kind === 'task' ? 'Tarea' : selectedGraphNode.knowledgeKind}</span>{#if selectedGraphNode.kind === 'task' && selectedGraphNode.status}<span class="detail-chip">{statuses.find(s => s.id === selectedGraphNode?.status)?.label ?? selectedGraphNode.status}</span>{/if}{#if selectedGraphNode.priority}<span class="detail-chip">Prioridad {selectedGraphNode.priority}</span>{/if}<button type="button" class="detail-close" aria-label="Cerrar detalle" on:click={() => selectedGraphNode = null}>×</button></header><strong>{selectedGraphNode.label}</strong>{#if selectedGraphNode.kind !== 'project'}<small>{projects.find(p => p.id === selectedGraphNode?.projectId)?.name ?? ''}</small>{/if}<p class:detail-empty={!(selectedGraphNode.description || selectedGraphNode.summary)}>{selectedGraphNode.description || selectedGraphNode.summary || 'Sin descripción.'}</p>{#if selectedGraphNode.source}<small class="detail-source">{selectedGraphNode.source}</small>{/if}{#if selectedGraphNode.tags?.length}<div class="file-tags">{#each selectedGraphNode.tags as tag}<span>{tag}</span>{/each}</div>{/if}</aside>{/if}</section>{/if}
     </section>
         </div>
     </div>
     {#if remoteAgentDiagnostics.length}<aside class="mcp-diagnostics" aria-live="polite"><header><strong>Diagnóstico MCP</strong><button aria-label="Cerrar diagnóstico" on:click={() => remoteAgentDiagnostics = []}>×</button></header>{#each remoteAgentDiagnostics as item}<div class="diagnostic-row"><span class="diagnostic-dot" class:diagnostic-ok={item.status === 'ok'} class:diagnostic-error={item.status === 'error'} class:diagnostic-pending={item.status === 'pending' || item.status === 'checking'}></span><strong>{item.label}</strong><small>{item.detail}</small></div>{/each}</aside>{/if}
-    {#if selectedTask}<div class="task-modal-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) selectedTask = null; }}><dialog open class="task-dialog" aria-label="Detalle de tarea"><header><div><div class="eyebrow">TAREA · {projects.find(project => project.id === selectedTask.projectId)?.name ?? 'Proyecto'}</div><h2>Detalles y conversación</h2></div><button class="secondary" on:click={() => selectedTask = null}>Cerrar</button></header><label>Título<input bind:value={selectedTask.title} maxlength="200" /></label><label>Descripción<textarea bind:value={selectedTask.description} rows="4"></textarea></label><div class="task-detail-fields"><label>Estado<select bind:value={selectedTask.status}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select></label><label>Prioridad<select bind:value={selectedTask.priority}><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></label><label>Agente<select bind:value={selectedTask.assigneeAgentId}><option value={null}>Sin asignar</option>{#each agents.filter(agent => agent.active) as agent (agent.id)}<option value={agent.id}>{agent.name}</option>{/each}</select></label></div><button class="primary" on:click={() => void saveTaskDetails()} disabled={busy}>Guardar tarea</button><section class="task-conversation"><div class="eyebrow">CONVERSACIÓN · {taskComments.length}{taskCommentsDone ? "" : "+"}</div><form on:submit|preventDefault={addTaskComment}><select bind:value={taskCommentKind} aria-label="Tipo de comentario"><option value="message">Comentario</option><option value="instruction">Instrucción</option><option value="question">Pregunta</option><option value="decision">Decisión</option><option value="update">Actualización</option></select><textarea bind:value={taskComment} placeholder="Añade contexto para tu equipo o agente…" rows="3"></textarea><button class="primary" disabled={busy || !taskComment.trim()}>Añadir comentario</button></form><div class="task-comment-list">{#if !taskCommentsDone}<button class="comment-load-more" type="button" on:click={() => void loadMoreTaskComments()} disabled={taskCommentsLoading}>{taskCommentsLoading ? "Cargando…" : "↑ Cargar comentarios anteriores"}</button>{/if}{#each taskComments as comment (comment.id)}<article><div><strong>{comment.authorType === 'agent' ? 'Agente' : 'Tú'}</strong><span>{comment.kind}</span><time>{date(comment.createdAt)}</time></div><p>{comment.content}</p></article>{/each}{#if !taskComments.length}<p class="empty-small">Aún no hay conversación en esta tarea.</p>{/if}</div></section></dialog></div>{/if}
+    {#if selectedTask}<div class="task-modal-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) selectedTask = null; }}><dialog open class="task-dialog" aria-label="Detalle de tarea"><header><div><div class="eyebrow">TAREA · {projects.find(project => project.id === selectedTask.projectId)?.name ?? 'Proyecto'}</div><h2>Detalles y conversación</h2></div><button class="secondary" on:click={() => selectedTask = null}>Cerrar</button></header><label>Título<input bind:value={selectedTask.title} maxlength="200" /></label><label>Descripción<textarea bind:value={selectedTask.description} rows="4"></textarea></label><label>Etiquetas<input bind:value={selectedTask.tagsText} placeholder="ciberseguridad, código" list="task-tag-options" /></label><div class="task-detail-fields"><label>Estado<select bind:value={selectedTask.status}>{#each statuses as s}<option value={s.id}>{s.label}</option>{/each}</select></label><label>Prioridad<select bind:value={selectedTask.priority}><option value="low">Baja</option><option value="medium">Media</option><option value="high">Alta</option><option value="urgent">Urgente</option></select></label><label>Agente<select bind:value={selectedTask.assigneeAgentId}><option value={null}>Sin asignar</option>{#each agents.filter(agent => agent.active) as agent (agent.id)}<option value={agent.id}>{agent.name}</option>{/each}</select></label></div><button class="primary" on:click={() => void saveTaskDetails()} disabled={busy}>Guardar tarea</button><section class="task-conversation"><div class="eyebrow">CONVERSACIÓN · {taskComments.length}{taskCommentsDone ? "" : "+"}</div><form on:submit|preventDefault={addTaskComment}><select bind:value={taskCommentKind} aria-label="Tipo de comentario"><option value="message">Comentario</option><option value="instruction">Instrucción</option><option value="question">Pregunta</option><option value="decision">Decisión</option><option value="update">Actualización</option></select><textarea bind:value={taskComment} placeholder="Añade contexto para tu equipo o agente…" rows="3"></textarea><button class="primary" disabled={busy || !taskComment.trim()}>Añadir comentario</button></form><div class="task-comment-list">{#if !taskCommentsDone}<button class="comment-load-more" type="button" on:click={() => void loadMoreTaskComments()} disabled={taskCommentsLoading}>{taskCommentsLoading ? "Cargando…" : "↑ Cargar comentarios anteriores"}</button>{/if}{#each taskComments as comment (comment.id)}<article><div><strong>{comment.authorType === 'agent' ? 'Agente' : 'Tú'}</strong><span>{comment.kind}</span><time>{date(comment.createdAt)}</time></div><p>{comment.content}</p></article>{/each}{#if !taskComments.length}<p class="empty-small">Aún no hay conversación en esta tarea.</p>{/if}</div></section></dialog></div>{/if}
     {#if previewFile}<div class="preview-backdrop" role="presentation" on:click={(event) => { if (event.target === event.currentTarget) previewFile = null; }}><dialog open class="preview-dialog" aria-label={`Vista previa de ${previewFile.filename}`}><header><div><div class="eyebrow">VISTA PREVIA</div><strong>{previewFile.filename}</strong></div><div><a href={previewFile.url ?? '#'} target="_blank" rel="noreferrer" download={previewFile.filename}>Descargar</a><button class="secondary" on:click={() => previewFile = null}>Cerrar</button></div></header>{#if previewLoading}<div class="empty">Preparando vista previa…</div>{:else if previewError}<div class="preview-message">{previewError}</div>{:else if previewFile.contentType === 'application/pdf'}<iframe class="preview-pdf" title={`Vista previa de ${previewFile.filename}`} src={previewFile.url}></iframe>{:else}<pre class="preview-text">{previewContent}</pre>{/if}</dialog></div>{/if}
     {/if}
     <div class="auth-shell" class:auth-hidden={!!lastAuthToken}>
@@ -719,86 +734,92 @@
 <style>
     :global(*) { box-sizing: border-box; }
     :global(html) { color-scheme: dark; }
-    :global(body) { margin: 0; background: #191c17; color: #f2eee3; font: 15px/1.55 'Instrument Sans', system-ui, sans-serif; }
+    :global(body) { margin: 0; background: #11140f; color: #e8e5d9; font: 15px/1.55 'Instrument Sans', system-ui, sans-serif; }
     :global(button), :global(input), :global(select), :global(textarea) { font: inherit; }
-    :global(button:focus-visible), :global(a:focus-visible), :global(input:focus-visible), :global(select:focus-visible), :global(textarea:focus-visible) { outline: 2px solid #b3bd8f; outline-offset: 2px; }
-    .web-shell { --bg:#191c17; --surface:#20231c; --panel:#24271f; --panel-raised:#2b2e24; --line:#3b4034; --text:#f2eee3; --muted:#b8b5a7; --quiet:#969688; --sage:#b3bd8f; --clay:#dfa284; min-height:100vh; background:var(--bg); color:var(--text); }
+    :global(button:focus-visible), :global(a:focus-visible), :global(input:focus-visible), :global(select:focus-visible), :global(textarea:focus-visible) { outline: 2px solid #9aa57b; outline-offset: 2px; }
+    .web-shell { --bg:#11140f; --surface:#151810; --panel:#191c14; --panel-raised:#1f2318; --line:#2b2f23; --text:#e8e5d9; --muted:#9f9d8f; --quiet:#777869; --sage:#9aa57b; --clay:#c58e6e; min-height:100vh; background:var(--bg); color:var(--text); }
     .app-shell { display:grid; grid-template-columns:252px minmax(0,1fr); min-height:100vh; }
-    .sidebar { position:sticky; top:0; display:flex; flex-direction:column; height:100vh; min-height:0; padding:26px 18px 16px; background:#1d201a; border-right:1px solid var(--line); }
-    .brand { display:flex; align-items:center; gap:12px; min-width:0; padding:0 8px 30px; color:var(--text); text-decoration:none; font:600 22px/1 'Bricolage Grotesque',Georgia,serif; letter-spacing:-.04em; }
-    .brand-mark,.brand-icon { width:36px; height:36px; flex:none; object-fit:cover; border:1px solid #4a4b3d; border-radius:10px; }
+    .sidebar { position:sticky; top:0; display:flex; flex-direction:column; height:100vh; min-height:0; padding:26px 18px 16px; background:#0d100b; border-right:1px solid var(--line); }
+    .brand { display:flex; align-items:center; gap:12px; min-width:0; padding:0 8px 30px; color:var(--text); text-decoration:none; font:600 18px/1 'Instrument Sans',system-ui,sans-serif; letter-spacing:-.02em; }
+    .brand-mark,.brand-icon { width:30px; height:30px; flex:none; object-fit:cover; border:1px solid #373b2e; border-radius:7px; }
     .brand small { display:block; margin-top:6px; color:var(--quiet); font:600 9px/1 'Instrument Sans',system-ui,sans-serif; letter-spacing:.16em; }
-    .sidebar-scroll { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:#4b4d3f transparent; }
-    .nav-label,.eyebrow { color:var(--quiet); font-size:10px; font-weight:700; letter-spacing:.15em; text-transform:uppercase; }
+    .sidebar-scroll { flex:1; min-height:0; overflow-y:auto; overscroll-behavior:contain; scrollbar-width:thin; scrollbar-color:#373b2e transparent; }
+    .nav-label,.eyebrow { color:var(--quiet); font-size:10px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }
     .nav-label { padding:12px 10px 8px; }
     .workspace-nav { display:grid; gap:3px; }
-    .workspace-nav button,.project-link { display:flex; align-items:center; gap:12px; width:100%; min-height:42px; padding:9px 11px; border:0; border-radius:7px; background:transparent; color:#c5c2b7; text-align:left; cursor:pointer; transition:background .16s,color .16s; }
-    .workspace-nav button:hover,.project-link:hover { background:#2a2d24; color:var(--text); }
-    .workspace-nav button.active { background:#34372c; color:#e7e8d7; }
-    .workspace-nav button>span:first-child { width:18px; color:var(--sage); text-align:center; font-size:16px; }
+    .workspace-nav button,.project-link { display:flex; align-items:center; gap:12px; width:100%; min-height:42px; padding:9px 11px; border:0; border-radius:7px; background:transparent; color:#b3b1a4; text-align:left; cursor:pointer; transition:background .16s,color .16s; }
+    .workspace-nav button:hover,.project-link:hover { background:#1c1f16; color:var(--text); }
+    .workspace-nav button.active { background:#22261a; color:#e2e2d0; }
+    .nav-icon { display:grid; width:18px; flex:none; place-items:center; color:var(--quiet); transition:color .16s; }
+    .workspace-nav button:hover .nav-icon,.workspace-nav button.active .nav-icon { color:var(--sage); }
     .nav-text { flex:1; }
     .nav-count { color:var(--quiet); font-size:12px; font-variant-numeric:tabular-nums; }
     .sidebar-projects { margin-top:26px; }
     .project-link { min-height:36px; overflow:hidden; color:var(--muted); font-size:13px; white-space:nowrap; text-overflow:ellipsis; }
     .project-dot { width:7px; height:7px; flex:none; border-radius:50%; background:var(--clay); }
-    .project-active { background:#34372c!important; color:var(--text)!important; }
+    .project-active { background:#22261a!important; color:var(--text)!important; }
     .side-empty { display:block; padding:5px 10px; color:var(--quiet); font-size:12px; }
+    .ws-switch { display:grid; gap:5px; flex:none; margin-top:12px; color:var(--quiet); font-size:10px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }
+    .ws-switch select { padding:8px 10px; border:1px solid #3b3f31; border-radius:6px; background:#0c0f0a; color:var(--text); font-size:12px; letter-spacing:0; text-transform:none; }
     .sidebar-bottom { display:flex; align-items:center; gap:10px; flex:none; margin-top:16px; padding:14px 4px 0; border-top:1px solid var(--line); }
     .sidebar-user { display:flex; align-items:center; gap:10px; min-width:0; padding:0; border:0; background:none; color:inherit; text-align:left; cursor:pointer; }
-    .pilot-avatar { display:grid; width:34px; height:34px; flex:none; place-items:center; border:1px solid #5b5a46; border-radius:50%; background:#34372c; color:#e4c0a4; font-weight:600; }
+    .pilot-avatar { display:grid; width:34px; height:34px; flex:none; place-items:center; border:1px solid #5b5a46; border-radius:50%; background:#22261a; color:#c9a187; font-weight:600; }
     .pilot-text { display:grid; min-width:0; gap:3px; font-size:12px; }
     .pilot-text strong,.pilot-text small { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .pilot-text small { color:var(--quiet); font-size:11px; }
-    .cloud-indicator { margin-left:auto; color:#888b78; font-size:11px; }
-    .cloud-indicator.cloud-on { color:#b3bd8f; }
+    .cloud-indicator { margin-left:auto; color:#6b6e5b; font-size:11px; }
+    .cloud-indicator.cloud-on { color:#9aa57b; }
     .main-area { display:flex; min-width:0; min-height:100vh; flex-direction:column; }
-    .topbar { position:sticky; top:0; z-index:5; display:flex; align-items:center; justify-content:space-between; gap:18px; min-height:68px; padding:0 clamp(22px,4vw,56px); border-bottom:1px solid #ffffff0c; background:#191c17e8; backdrop-filter:blur(16px); }
+    .topbar { position:sticky; top:0; z-index:5; display:flex; align-items:center; justify-content:space-between; gap:18px; min-height:68px; padding:0 clamp(22px,4vw,56px); border-bottom:1px solid #ffffff0c; background:#11140fe8; backdrop-filter:blur(16px); }
     .breadcrumbs { display:flex; align-items:center; gap:11px; min-width:0; color:var(--quiet); font-size:13px; }
     .breadcrumbs strong { overflow:hidden; color:var(--text); font-weight:600; text-overflow:ellipsis; white-space:nowrap; }
-    .crumb-sep { color:#66695a; }
+    .crumb-sep { color:#4a4e3d; }
     .top-actions { display:flex; align-items:center; gap:9px; }
     .sync-pill { color:var(--muted); font-size:12px; white-space:nowrap; }
-    .sync-pill.sync-offline { color:#e4a68a; }
-    .secondary,.avatar-button,.subtle-button,.project-edit-button,.project-delete-button,.revoke-agent { min-height:36px; padding:7px 12px; border:1px solid #555646; border-radius:6px; background:transparent; color:#e1ddcf; font-size:12px; cursor:pointer; transition:border-color .16s,background .16s; }
-    .secondary:hover,.avatar-button:hover,.subtle-button:hover,.project-edit-button:hover { border-color:var(--sage); background:#2a2d24; }
+    .sync-pill.sync-offline { color:#cf9477; }
+    .secondary,.avatar-button,.subtle-button,.project-edit-button,.project-delete-button,.revoke-agent { min-height:36px; padding:7px 12px; border:1px solid #3b3f31; border-radius:6px; background:transparent; color:#d3d0c2; font-size:12px; cursor:pointer; transition:border-color .16s,background .16s; }
+    .secondary:hover,.avatar-button:hover,.subtle-button:hover,.project-edit-button:hover { border-color:var(--sage); background:#1c1f16; }
     .secondary:disabled,.primary:disabled { opacity:.55; cursor:wait; }
-    .avatar-button { border-color:transparent; color:#e4b294; }
+    .avatar-button { border-color:transparent; color:#c58e6e; }
     .dashboard { width:min(1480px,100%); margin:0 auto; padding:34px clamp(22px,4vw,56px) 72px; }
     .intro { display:flex; align-items:flex-end; justify-content:space-between; gap:28px; margin-bottom:28px; padding-bottom:24px; border-bottom:1px solid var(--line); }
-    .intro h1,.connect-card h1 { margin:9px 0 8px; color:var(--text); font:600 clamp(30px,3.2vw,44px)/1.04 'Bricolage Grotesque',Georgia,serif; letter-spacing:-.045em; }
-    .intro p,.connect-card>p { max-width:58ch; margin:0; color:#c0beb2; font-size:15px; }
+    .intro h1,.connect-card h1 { margin:9px 0 8px; color:var(--text); font:600 clamp(24px,2.4vw,30px)/1.15 'Instrument Sans',system-ui,sans-serif; letter-spacing:-.02em; }
+    .intro p,.connect-card>p { max-width:58ch; margin:0; color:#a9a79a; font-size:15px; }
     .last-sync { display:grid; gap:4px; flex:none; color:var(--quiet); font-size:11px; text-align:right; }
     .last-sync strong { color:var(--text); font-size:13px; font-weight:500; }
     .last-sync small { color:var(--muted); font-size:11px; }
     .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin:0 0 18px; }
-    .summary-grid article,.work-panel,.side-panel { min-width:0; border:1px solid var(--line); border-radius:14px; background:linear-gradient(145deg,#272a22,var(--panel) 64%); box-shadow:0 14px 38px #00000012; }
+    .summary-grid article,.work-panel,.side-panel { min-width:0; border:1px solid var(--line); border-radius:8px; background:var(--panel); }
     .summary-grid article { padding:17px 18px; }
     .summary-grid span,.summary-grid small { display:block; color:var(--muted); font-size:12px; }
-    .summary-grid strong { display:block; margin:7px 0 2px; color:var(--text); font:500 31px/1 'Bricolage Grotesque',Georgia,serif; font-variant-numeric:tabular-nums; }
+    .summary-grid strong { display:block; margin:7px 0 2px; color:var(--text); font:600 26px/1 'Instrument Sans',system-ui,sans-serif; font-variant-numeric:tabular-nums; }
     .summary-grid small { color:var(--quiet); }
     .workspace-grid { display:grid; grid-template-columns:minmax(0,1.65fr) minmax(280px,.8fr); gap:16px; align-items:start; }
     .work-panel { padding:22px; }
     .panel-head { display:flex; align-items:center; justify-content:space-between; gap:14px; }
-    .panel-head h2,.side-panel h2,.work-panel>h2 { margin:6px 0 0; color:var(--text); font:600 21px/1.15 'Bricolage Grotesque',Georgia,serif; letter-spacing:-.025em; }
+    .panel-head h2,.side-panel h2,.work-panel>h2 { margin:6px 0 0; color:var(--text); font:600 17px/1.2 'Instrument Sans',system-ui,sans-serif; letter-spacing:-.01em; }
     .panel-head>span { color:var(--muted); font-size:12px; }
-    .panel-head select,.task select,.filters select,.filters input,.task-create input,.create-project input,.note-meta select,.image-library select,.project-edit-form input,.project-edit-form textarea,.relation-form input,.relation-form select,.remote-agent-form input,.remote-agent-form select { min-width:0; padding:9px 11px; border:1px solid #555646; border-radius:6px; background:#1b1e19; color:var(--text); }
+    .panel-head select,.task select,.filters select,.filters input,.task-create input,.create-project input,.note-meta select,.image-library select,.project-edit-form input,.project-edit-form textarea,.relation-form input,.relation-form select,.remote-agent-form input,.remote-agent-form select { min-width:0; padding:9px 11px; border:1px solid #3b3f31; border-radius:6px; background:#0c0f0a; color:var(--text); }
     .filters { display:flex; flex-wrap:wrap; gap:8px; margin:18px 0 12px; }
     .filters select,.filters input { font-size:12px; }
     .filters input { flex:1; min-width:140px; }
-    .filters input::placeholder,.task-create input::placeholder,.create-project input::placeholder { color:#929384; }
+    .filters input::placeholder,.task-create input::placeholder,.create-project input::placeholder { color:#727367; }
     .task-create { display:flex; flex-wrap:wrap; gap:8px; margin:12px 0; padding:14px 0; border-block:1px solid var(--line); }
     .task-create input { flex:1 1 180px; }
-    .primary,.task-create button,.create-project button,.new-note,.upload,.remote-agent-form button,.relation-form button { min-height:40px; padding:9px 15px; border:0; border-radius:6px; background:var(--clay); color:#251b16; font-weight:650; cursor:pointer; }
-    .primary:hover,.task-create button:hover,.create-project button:hover,.new-note:hover,.remote-agent-form button:hover,.relation-form button:hover { background:#edb497; }
+    .primary,.task-create button,.create-project button,.new-note,.upload,.remote-agent-form button,.relation-form button { min-height:40px; padding:9px 15px; border:0; border-radius:6px; background:var(--clay); color:#1a130f; font-weight:650; cursor:pointer; }
+    .primary:hover,.task-create button:hover,.create-project button:hover,.new-note:hover,.remote-agent-form button:hover,.relation-form button:hover { background:#d29a7a; }
     .task-list { display:grid; }
-    .task { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:15px 2px; border-bottom:1px solid #3a3e33; }
+    .task { display:flex; align-items:center; justify-content:space-between; gap:16px; padding:15px 2px; border-bottom:1px solid #252920; }
     .task-main { display:flex; align-items:flex-start; gap:12px; min-width:0; }
     .task-main>div { min-width:0; }
     .task strong { color:var(--text); font-size:14px; font-weight:600; }
     .task p { margin:4px 0; color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
     .task small { color:var(--quiet); font-size:11px; }
-    .priority { width:8px; height:8px; flex:none; margin-top:6px; border-radius:50%; background:#b3bd8f; }
-    .priority.urgent { background:#d98975; }
+    .task-tags { display:flex; flex-wrap:wrap; gap:5px; margin:2px 0 6px; }
+    .tag-chip { padding:1px 8px; border:1px solid #485238; border-radius:4px; background:transparent; color:#bcc3a1; font-size:11px; cursor:pointer; }
+    .tag-chip:hover,.tag-chip.active { border-color:var(--sage); background:#1d2017; color:var(--text); }
+    .priority { width:8px; height:8px; flex:none; margin-top:6px; border-radius:50%; background:#9aa57b; }
+    .priority.urgent { background:#c9806c; }
     .task select { flex:none; font-size:12px; }
     .create-project { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:20px; padding-top:17px; border-top:1px solid var(--line); }
     .create-project strong { flex:none; color:var(--muted); font-size:12px; }
@@ -807,62 +828,62 @@
     .side-column { display:grid; gap:14px; }
     .side-panel { padding:19px; }
     .side-panel h2 { margin-bottom:12px; }
-    .agent { display:flex; align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid #3a3e33; }
+    .agent { display:flex; align-items:center; gap:10px; padding:12px 0; border-bottom:1px solid #252920; }
     .agent:last-of-type { border:0; }
-    .agent>span { width:8px; height:8px; flex:none; border-radius:50%; background:#77796a; }
+    .agent>span { width:8px; height:8px; flex:none; border-radius:50%; background:#5b5f48; }
     .agent>span.online { background:var(--sage); }
     .agent>div { display:grid; flex:1; gap:3px; min-width:0; }
     .agent strong { color:var(--text); font-size:13px; }
     .agent small,.agent time { color:var(--muted); font-size:11px; }
     .agent time { white-space:nowrap; }
     .events { display:grid; margin-top:10px; }
-    .events article { display:flex; gap:11px; padding:12px 0; border-bottom:1px solid #3a3e33; }
+    .events article { display:flex; gap:11px; padding:12px 0; border-bottom:1px solid #252920; }
     .events article:last-child { border:0; }
     .events i { width:7px; height:7px; flex:none; margin-top:6px; border-radius:50%; background:var(--sage); }
     .events i.agent-event { background:var(--clay); }
     .events article div { display:grid; gap:4px; }
-    .events strong { color:#e8e4d9; font-size:12px; font-weight:500; line-height:1.4; }
+    .events strong { color:#dfdccf; font-size:12px; font-weight:500; line-height:1.4; }
     .events small { color:var(--quiet); font-size:11px; }
-    .activity-filter { margin-top:12px; padding:8px 10px; border:1px solid #555646; border-radius:6px; background:#1b1e19; color:var(--text); }
+    .activity-filter { margin-top:12px; padding:8px 10px; border:1px solid #3b3f31; border-radius:6px; background:#0c0f0a; color:var(--text); }
     .empty,.empty-small { color:var(--muted); font-size:13px; padding:28px 12px; text-align:center; }
-    .empty { border:1px dashed #555646; border-radius:7px; }
+    .empty { border:1px dashed #3b3f31; border-radius:7px; }
     .empty-small { padding:14px 0; }
     .project-library { margin-top:0; }
     .project-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:12px; margin-top:18px; }
-    .project-card { display:flex; min-height:180px; flex-direction:column; justify-content:space-between; gap:14px; padding:18px; border:1px solid var(--line); border-radius:13px; background:linear-gradient(150deg,#24271f,#1e211b); transition:border-color .2s,background .2s,transform .2s,box-shadow .2s; }
-    .project-card:hover,.project-card.selected { transform:translateY(-2px); border-color:#77795e; background:#292c23; box-shadow:0 13px 30px #00000020; }
+    .project-card { display:flex; min-height:180px; flex-direction:column; justify-content:space-between; gap:14px; padding:18px; border:1px solid var(--line); border-radius:8px; background:var(--panel); transition:border-color .16s,background .16s; }
+    .project-card:hover,.project-card.selected { border-color:#4a4e3d; background:#1d2017; }
     .project-open { display:grid; flex:1; align-content:start; gap:9px; padding:0; border:0; background:transparent; color:inherit; text-align:left; cursor:pointer; }
-    .project-open strong { color:var(--text); font:600 19px/1.15 'Bricolage Grotesque',Georgia,serif; }
+    .project-open strong { color:var(--text); font:600 19px/1.15 'Instrument Sans',system-ui,sans-serif; }
     .project-open p { margin:0; color:var(--muted); font-size:13px; line-height:1.5; }
     .project-open small,.project-library>.panel-head>span { color:var(--quiet); font-size:11px; }
-    .project-status { justify-self:start; padding:3px 8px; border:1px solid #555646; border-radius:3px; color:#d6d5c7; font-size:10px; }
+    .project-status { justify-self:start; padding:3px 8px; border:1px solid #3b3f31; border-radius:3px; color:#c4c2b4; font-size:10px; }
     .project-status.archived { color:var(--muted); }
     .project-card-actions { display:flex; gap:7px; padding-top:12px; border-top:1px solid var(--line); }
     .project-edit-button,.project-delete-button { min-height:32px; padding:5px 9px; font-size:11px; }
-    .project-delete-button,.revoke-agent { border-color:#70483a; color:#e6aa8d; }
-    .project-delete-button:hover,.revoke-agent:hover { background:#392820; }
+    .project-delete-button,.revoke-agent { border-color:#5a3a2f; color:#cf9477; }
+    .project-delete-button:hover,.revoke-agent:hover { background:#2a1d18; }
     .project-edit-form,.project-relations { display:grid; gap:11px; margin-top:20px; padding:18px 0 0; border-top:1px solid var(--line); }
     .project-edit-form input,.project-edit-form textarea,.relation-form input,.relation-form select { width:100%; }
     .project-edit-form>div:last-child { display:flex; gap:8px; }
-    .project-relations h3 { margin:0; font:600 18px 'Bricolage Grotesque',Georgia,serif; }
+    .project-relations h3 { margin:0; font:600 18px 'Instrument Sans',system-ui,sans-serif; }
     .relation-form { display:grid; grid-template-columns:1fr 1fr 1.4fr auto; gap:8px; }
     .relation-form button { min-height:38px; padding:8px 12px; }
     .relation-row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); font-size:12px; }
     .relation-row span { color:var(--text); }
     .relation-row small { flex:1; color:var(--muted); }
-    .relation-row button { border:0; background:transparent; color:#e6aa8d; font-size:20px; cursor:pointer; }
+    .relation-row button { border:0; background:transparent; color:#cf9477; font-size:20px; cursor:pointer; }
     .content-grid { display:grid; grid-template-columns:minmax(230px,.7fr) minmax(0,1.5fr); gap:14px; }
     .note-list { align-self:start; }
-    .note-list h2 { margin:7px 0 12px; font:600 20px 'Bricolage Grotesque',Georgia,serif; }
+    .note-list h2 { margin:7px 0 12px; font:600 20px 'Instrument Sans',system-ui,sans-serif; }
     .note-row-wrap { display:flex; align-items:stretch; gap:5px; border-bottom:1px solid var(--line); }
     .note-row { display:grid; flex:1; min-width:0; gap:5px; padding:12px 8px; border:0; background:transparent; color:var(--text); text-align:left; cursor:pointer; }
-    .note-row.selected,.note-row:hover { background:#303329; }
+    .note-row.selected,.note-row:hover { background:#1e2218; }
     .note-row strong { font-size:13px; }
     .note-row small { color:var(--muted); font-size:11px; }
-    .note-delete { align-self:center; width:30px; height:30px; flex:none; border:1px solid #70483a; border-radius:5px; background:transparent; color:#e6aa8d; font-size:18px; cursor:pointer; }
+    .note-delete { align-self:center; width:30px; height:30px; flex:none; border:1px solid #5a3a2f; border-radius:5px; background:transparent; color:#cf9477; font-size:18px; cursor:pointer; }
     .new-note { margin-top:13px; }
     .note-editor { display:grid; align-content:start; gap:14px; }
-    .note-title,.note-editor textarea { width:100%; padding:12px 13px; border:1px solid #555646; border-radius:6px; background:#1b1e19; color:var(--text); }
+    .note-title,.note-editor textarea { width:100%; padding:12px 13px; border:1px solid #3b3f31; border-radius:6px; background:#0c0f0a; color:var(--text); }
     .note-editor textarea { min-height:42vh; resize:vertical; line-height:1.65; }
     .note-meta { display:flex; gap:8px; }
     .primary { justify-self:end; }
@@ -871,12 +892,12 @@
     .upload { display:inline-flex; align-items:center; margin:12px 0 16px; }
     .upload input { display:none; }
     .image-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; }
-    .image-grid article { overflow:hidden; border:1px solid var(--line); border-radius:7px; background:#20231c; }
-    .image-grid img { display:block; width:100%; height:155px; object-fit:cover; background:#1b1e19; }
+    .image-grid article { overflow:hidden; border:1px solid var(--line); border-radius:7px; background:#151810; }
+    .image-grid img { display:block; width:100%; height:155px; object-fit:cover; background:#0c0f0a; }
     .image-grid article>div { display:grid; gap:5px; padding:11px; }
     .image-grid strong { overflow-wrap:anywhere; font-size:12px; }
     .image-grid small { color:var(--muted); font-size:11px; }
-    .image-grid button { justify-self:start; padding:3px 0; border:0; background:transparent; color:#e6aa8d; cursor:pointer; font-size:11px; }
+    .image-grid button { justify-self:start; padding:3px 0; border:0; background:transparent; color:#cf9477; cursor:pointer; font-size:11px; }
     .file-list { display:grid; gap:8px; margin-top:16px; }
     .file-list article { display:flex; align-items:center; gap:12px; min-width:0; padding:12px; border:1px solid var(--line); border-radius:8px; background:var(--surface); }
     .file-icon { display:grid; place-items:center; width:42px; height:42px; flex:none; border-radius:8px; background:var(--panel-raised); color:var(--sage); font-size:10px; font-weight:750; }
@@ -884,53 +905,60 @@
     .file-info strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .file-info small { color:var(--muted); font-size:12px; }
     .file-search-row { display:grid; grid-template-columns:2fr 1fr; gap:8px; margin-top:15px; }
-    .file-search-row input,.file-tag-form input { min-width:0; padding:9px 11px; border:1px solid #555646; border-radius:6px; background:#1b1e19; color:var(--text); }
+    .file-search-row input,.file-tag-form input { min-width:0; padding:9px 11px; border:1px solid #3b3f31; border-radius:6px; background:#0c0f0a; color:var(--text); }
     .file-tags { display:flex; flex-wrap:wrap; gap:5px; margin-top:5px; }
-    .file-tags span { padding:2px 7px; border:1px solid #596447; border-radius:999px; color:#d4d9bb; font-size:10px; }
+    .file-tags span { padding:2px 7px; border:1px solid #485238; border-radius:999px; color:#bcc3a1; font-size:10px; }
     .file-tag-form { display:flex; flex-wrap:wrap; gap:6px; margin-top:7px; }
     .file-tag-form input { flex:1; }
     .file-list a { color:var(--sage); font-size:13px; text-decoration:none; }
     .file-list button { flex:none; }
     .graph-workspace { margin-top:0; }
     .graph-hint { margin:13px 0; }
-    .graph-canvas { height:min(68vh,720px); min-height:440px; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#1d201a; }
-    .graph-detail { display:grid; gap:6px; margin-top:12px; padding:15px; border-left:2px solid var(--sage); background:#20231c; }
-    .graph-detail strong { font-size:14px; }
-    .graph-detail span,.graph-detail small { color:var(--muted); font-size:12px; }
-    .graph-detail p { margin:0; color:#d0ccbf; font-size:13px; }
+    .graph-canvas { height:min(68vh,720px); min-height:440px; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#0d100b; }
+    .graph-detail { display:grid; gap:8px; margin-top:12px; padding:16px 18px; border:1px solid var(--line); border-left:2px solid var(--sage); border-radius:6px; background:var(--surface); }
+    .graph-detail header { display:flex; align-items:center; gap:6px; }
+    .graph-detail strong { font-size:15px; font-weight:600; }
+    .graph-detail small { color:var(--muted); font-size:12px; }
+    .graph-detail p { max-height:220px; margin:0; overflow:auto; color:#bfbcaf; font-size:13px; line-height:1.6; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .graph-detail p.detail-empty { color:var(--quiet); font-style:italic; }
+    .detail-kind,.detail-chip { padding:2px 8px; border:1px solid var(--line); border-radius:4px; color:var(--muted); font-size:10px; font-weight:600; letter-spacing:.06em; text-transform:uppercase; }
+    .detail-kind { border-color:#485238; color:var(--sage); }
+    .detail-close { margin-left:auto; width:26px; height:26px; border:0; border-radius:4px; background:transparent; color:var(--muted); font-size:18px; cursor:pointer; }
+    .detail-close:hover { background:var(--panel-raised); color:var(--text); }
+    .detail-source { font-family:'JetBrains Mono',ui-monospace,monospace; font-size:11px!important; }
     .reconnect-banner,.alert { display:flex; align-items:center; gap:14px; width:min(1480px,calc(100% - 36px)); margin:14px auto 0; padding:12px 15px; border-radius:6px; font-size:13px; }
-    .reconnect-banner { border:1px solid #806344; background:#2b281f; color:#e3c393; }
+    .reconnect-banner { border:1px solid #6b5438; background:#1f1c14; color:#cbaa78; }
     .reconnect-banner span { flex:1; }
-    .reconnect-banner button { padding:7px 10px; border:1px solid #806344; border-radius:5px; background:transparent; color:inherit; cursor:pointer; }
+    .reconnect-banner button { padding:7px 10px; border:1px solid #6b5438; border-radius:5px; background:transparent; color:inherit; cursor:pointer; }
     .alert { justify-content:flex-start; }
-    .error { border:1px solid #70483a; background:#30231f; color:#e8ae98; }
-    .notice { border:1px solid #596447; background:#292d22; color:#d4d9bb; }
-    .auth-shell { min-height:100vh; background:radial-gradient(ellipse at 50% 0,#34372b 0,transparent 48%),var(--bg); }
+    .error { border:1px solid #5a3a2f; background:#231915; color:#d49f8a; }
+    .notice { border:1px solid #485238; background:#292d22; color:#bcc3a1; }
+    .auth-shell { min-height:100vh; background:var(--bg); }
     .auth-shell.auth-hidden { display:none; }
-    .auth-header { display:flex; align-items:center; justify-content:space-between; height:72px; padding:0 clamp(20px,5vw,64px); border-bottom:1px solid var(--line); background:#1d201a; }
+    .auth-header { display:flex; align-items:center; justify-content:space-between; height:72px; padding:0 clamp(20px,5vw,64px); border-bottom:1px solid var(--line); background:#0d100b; }
     .auth-header .brand { padding:0; }
     .back-to-landing { color:var(--muted); text-decoration:none; font-size:13px; }
     .back-to-landing:hover { color:var(--text); }
     .auth-content { display:grid; min-height:calc(100vh - 72px); place-items:center; padding:30px 18px; }
-    .connect-card { width:min(480px,100%); padding:32px; border:1px solid #4b4d3e; border-radius:10px; background:#24271f; }
+    .connect-card { width:min(480px,100%); padding:32px; border:1px solid #373b2e; border-radius:8px; background:#191c14; }
     .connect-card h1 { margin-top:13px; font-size:34px; }
     .connect-card>p { font-size:14px; }
-    .login-mark { display:block; width:58px; height:58px; margin-bottom:20px; object-fit:cover; border:1px solid #4b4d3e; border-radius:12px; }
+    .login-mark { display:block; width:58px; height:58px; margin-bottom:20px; object-fit:cover; border:1px solid #373b2e; border-radius:12px; }
     .auth-island-host { margin-top:23px; }
     :global(.mitpad-auth-form-wrap) { width:100%; padding-top:4px; }
     :global(.mitpad-auth-form) { display:grid; width:100%; gap:14px; }
-    :global(.mitpad-auth-form label) { display:grid; gap:7px; color:#d5d1c4; font-size:13px; }
-    :global(.mitpad-auth-form input) { width:100%; padding:11px 12px; border:1px solid #555646; border-radius:6px; background:#1b1e19; color:var(--text); }
-    :global(.mitpad-auth-submit) { min-height:42px; border:0; border-radius:6px; background:var(--clay); color:#251b16; font-weight:650; cursor:pointer; }
-    :global(.mitpad-auth-submit:hover) { background:#edb497; }
-    :global(.mitpad-auth-switch),:global(.mitpad-auth-session button) { margin-top:12px; border:0; background:transparent; color:#e3a486; cursor:pointer; }
+    :global(.mitpad-auth-form label) { display:grid; gap:7px; color:#c6c3b6; font-size:13px; }
+    :global(.mitpad-auth-form input) { width:100%; padding:11px 12px; border:1px solid #3b3f31; border-radius:6px; background:#0c0f0a; color:var(--text); }
+    :global(.mitpad-auth-submit) { min-height:42px; border:0; border-radius:6px; background:var(--clay); color:#1a130f; font-weight:650; cursor:pointer; }
+    :global(.mitpad-auth-submit:hover) { background:#d29a7a; }
+    :global(.mitpad-auth-switch),:global(.mitpad-auth-session button) { margin-top:12px; border:0; background:transparent; color:#c58e6e; cursor:pointer; }
     :global(.mitpad-auth-footnote),:global(.mitpad-auth-status) { color:var(--muted); font-size:12px; line-height:1.55; }
-    :global(.mitpad-auth-error) { display:block; margin-top:12px; color:#e8ae98; font-size:12px; overflow-wrap:anywhere; }
+    :global(.mitpad-auth-error) { display:block; margin-top:12px; color:#d49f8a; font-size:12px; overflow-wrap:anywhere; }
     :global(.mitpad-auth-session) { display:flex; align-items:center; justify-content:space-between; gap:10px; }
-    .profile-backdrop { position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:18px; background:#0d0e0bcc; backdrop-filter:blur(8px); }
-    .profile-dialog { width:min(680px,100%); max-height:92vh; overflow:auto; padding:0; border:1px solid var(--line); border-radius:10px; background:var(--panel); color:var(--text); }
+    .profile-backdrop { position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:18px; background:#070806cc; backdrop-filter:blur(8px); }
+    .profile-dialog { width:min(680px,100%); max-height:92vh; overflow:auto; padding:0; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--text); }
     .profile-dialog>header { display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid var(--line); }
-    .profile-dialog h2 { margin:5px 0 0; font:600 22px 'Bricolage Grotesque',Georgia,serif; }
+    .profile-dialog h2 { margin:5px 0 0; font:600 22px 'Instrument Sans',system-ui,sans-serif; }
     .profile-dialog .sign-out { min-height:34px; padding:6px 10px; border:1px solid var(--line); border-radius:5px; background:transparent; color:var(--muted); cursor:pointer; }
     .profile-dialog :global(.account-profile) { padding:22px; }
     .profile-dialog :global(.profile-avatar) { width:72px; height:72px; }
@@ -941,59 +969,59 @@
     .remote-agent-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:18px 0 24px; }
     .remote-agent-form label { display:grid; gap:6px; color:var(--muted); font-size:12px; }
     .remote-agent-form button { align-self:end; }
-    .remote-agent-secret { display:grid; gap:12px; margin:18px 0; padding:17px; border:1px solid #686346; border-radius:7px; background:#2a2c22; }
+    .remote-agent-secret { display:grid; gap:12px; margin:18px 0; padding:17px; border:1px solid #55513a; border-radius:7px; background:#1a1d14; }
     .remote-agent-secret p { margin:4px 0 0; color:var(--muted); font-size:12px; }
-    .remote-agent-secret code { display:block; overflow-wrap:anywhere; padding:12px; border:1px solid var(--line); border-radius:5px; background:#1b1e19; color:#e3c99f; font-size:12px; }
+    .remote-agent-secret code { display:block; overflow-wrap:anywhere; padding:12px; border:1px solid var(--line); border-radius:5px; background:#0c0f0a; color:#cbaa78; font-size:12px; }
     .agent-secret-actions { display:flex; flex-wrap:wrap; gap:8px; }
-    .agent-secret-actions button { min-height:34px; padding:6px 10px; border:1px solid #555646; border-radius:5px; background:transparent; color:var(--text); cursor:pointer; }
+    .agent-secret-actions button { min-height:34px; padding:6px 10px; border:1px solid #3b3f31; border-radius:5px; background:transparent; color:var(--text); cursor:pointer; }
     .agent-key-check { color:var(--sage)!important; }
-    .mcp-diagnostics { position:fixed; z-index:35; right:20px; bottom:20px; display:grid; width:min(380px,calc(100vw - 32px)); gap:10px; padding:15px; border:1px solid #596447; border-radius:9px; background:#23261f; box-shadow:0 12px 36px #0008; }
+    .mcp-diagnostics { position:fixed; z-index:35; right:20px; bottom:20px; display:grid; width:min(380px,calc(100vw - 32px)); gap:10px; padding:15px; border:1px solid #485238; border-radius:9px; background:#23261f; }
     .mcp-diagnostics>header,.mcp-diagnostics>header>button { display:flex; align-items:center; justify-content:space-between; }
     .mcp-diagnostics>header>button { width:28px; height:28px; justify-content:center; border:1px solid var(--line); border-radius:5px; background:transparent; color:var(--text); cursor:pointer; }
     .diagnostic-row { display:grid; grid-template-columns:10px 90px minmax(0,1fr); align-items:start; gap:8px; font-size:12px; }
     .diagnostic-row small { color:var(--muted); overflow-wrap:anywhere; }
     .diagnostic-dot { width:8px; height:8px; margin-top:4px; border-radius:50%; background:#777; }
-    .diagnostic-ok { background:#a9c583; box-shadow:0 0 8px #a9c58388; }
-    .diagnostic-error { background:#df927e; box-shadow:0 0 8px #df927e88; }
-    .diagnostic-pending { background:#d7b56d; }
+    .diagnostic-ok { background:#8fa56c; }
+    .diagnostic-error { background:#c9806c; }
+    .diagnostic-pending { background:#b89a5c; }
     .agent-list-label { margin:24px 0 4px; padding-top:16px; border-top:1px solid var(--line); }
     .revoke-agent { min-height:31px; padding:5px 8px; font-size:11px; }
     .agent-list-head { display:flex; align-items:center; justify-content:space-between; gap:12px; margin:24px 0 4px; padding-top:16px; border-top:1px solid var(--line); }
     .agent-list-head .agent-list-label { margin:0; padding:0; border:0; }
     .task-drop-targets { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; margin:12px 0; }
-    .task-drop-targets button { display:grid; min-height:44px; place-items:center; border:1px dashed #666852; border-radius:9px; background:transparent; color:var(--muted); font-size:12px; cursor:pointer; }
-    .task-drop-targets button:hover { border-color:var(--sage); background:#2a2d24; color:var(--text); }
+    .task-drop-targets button { display:grid; min-height:44px; place-items:center; border:1px dashed #4a4e3d; border-radius:9px; background:transparent; color:var(--muted); font-size:12px; cursor:pointer; }
+    .task-drop-targets button:hover { border-color:var(--sage); background:#1c1f16; color:var(--text); }
     .note-attachments { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
     .note-attachments figure { overflow:hidden; margin:0; border:1px solid var(--line); border-radius:6px; }
     .note-attachments img { display:block; width:100%; height:110px; object-fit:cover; }
     .note-attachments figcaption { display:flex; justify-content:space-between; gap:8px; padding:7px 9px; color:var(--muted); font-size:11px; }
-    .note-attachments figcaption button { border:0; background:transparent; color:#e6aa8d; cursor:pointer; }
+    .note-attachments figcaption button { border:0; background:transparent; color:#cf9477; cursor:pointer; }
     .note-upload { justify-self:start; }
     .note-attachments { display:grid; grid-template-columns:repeat(auto-fill,minmax(140px,1fr)); gap:10px; }
     .note-attachments figure { overflow:hidden; margin:0; border:1px solid var(--line); border-radius:6px; }
     .note-attachments img { display:block; width:100%; height:110px; object-fit:cover; }
     .note-attachments figcaption { display:flex; justify-content:space-between; gap:8px; padding:7px 9px; color:var(--muted); font-size:11px; }
-    .note-attachments figcaption button { border:0; background:transparent; color:#e6aa8d; cursor:pointer; }
+    .note-attachments figcaption button { border:0; background:transparent; color:#cf9477; cursor:pointer; }
     .note-upload { justify-self:start; }
     .task-actions { display:flex; flex:none; align-items:center; gap:7px; }
-    .task-open,.agent-edit-button { min-height:32px; padding:5px 9px; border:1px solid #555646; border-radius:5px; background:transparent; color:#e1ddcf; font-size:11px; cursor:pointer; }
+    .task-open,.agent-edit-button { min-height:32px; padding:5px 9px; border:1px solid #3b3f31; border-radius:5px; background:transparent; color:#d3d0c2; font-size:11px; cursor:pointer; }
     .task-open:hover,.agent-edit-button:hover { border-color:var(--sage); }
-    .task-modal-backdrop { position:fixed; inset:0; z-index:30; display:grid; place-items:center; padding:18px; background:#0d0e0bcc; backdrop-filter:blur(7px); }
-    .preview-backdrop { position:fixed; inset:0; z-index:40; display:grid; place-items:center; padding:20px; background:#0d0e0bcc; backdrop-filter:blur(7px); }
-    .preview-dialog { position:relative; inset:auto; display:grid; grid-template-rows:auto minmax(0,1fr); width:min(1050px,100%); max-width:none; max-height:none; height:min(88vh,900px); margin:0; padding:0; overflow:hidden; border:1px solid var(--line); border-radius:10px; background:#24271f; color:var(--text); }
+    .task-modal-backdrop { position:fixed; inset:0; z-index:30; display:grid; place-items:center; padding:18px; background:#070806cc; backdrop-filter:blur(7px); }
+    .preview-backdrop { position:fixed; inset:0; z-index:40; display:grid; place-items:center; padding:20px; background:#070806cc; backdrop-filter:blur(7px); }
+    .preview-dialog { position:relative; inset:auto; display:grid; grid-template-rows:auto minmax(0,1fr); width:min(1050px,100%); max-width:none; max-height:none; height:min(88vh,900px); margin:0; padding:0; overflow:hidden; border:1px solid var(--line); border-radius:8px; background:#191c14; color:var(--text); }
     .preview-dialog>header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:13px 17px; border-bottom:1px solid var(--line); }
     .preview-dialog>header>div:first-child { display:grid; gap:3px; min-width:0; }
     .preview-dialog>header strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .preview-dialog>header>div:last-child { display:flex; flex:none; align-items:center; gap:8px; }
     .preview-dialog a { color:var(--sage); font-size:13px; text-decoration:none; }
     .preview-pdf { width:100%; height:100%; border:0; background:#fff; }
-    .preview-text { overflow:auto; margin:0; padding:22px; color:#e4e0d4; font:13px/1.65 ui-monospace,SFMono-Regular,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
-    .preview-message { align-self:start; margin:22px; padding:15px; border:1px solid #806344; border-radius:6px; color:#e3c393; }
-    .task-dialog { display:grid; width:min(760px,100%); max-height:92vh; gap:13px; overflow:auto; padding:22px; border:1px solid var(--line); border-radius:9px; background:#24271f; color:var(--text); }
+    .preview-text { overflow:auto; margin:0; padding:22px; color:#dcd9cc; font:13px/1.65 ui-monospace,SFMono-Regular,monospace; white-space:pre-wrap; overflow-wrap:anywhere; }
+    .preview-message { align-self:start; margin:22px; padding:15px; border:1px solid #6b5438; border-radius:6px; color:#cbaa78; }
+    .task-dialog { display:grid; width:min(760px,100%); max-height:92vh; gap:13px; overflow:auto; padding:22px; border:1px solid var(--line); border-radius:9px; background:#191c14; color:var(--text); }
     .task-dialog>header { display:flex; justify-content:space-between; align-items:center; gap:12px; padding-bottom:13px; border-bottom:1px solid var(--line); }
-    .task-dialog h2 { margin:5px 0 0; font:600 22px 'Bricolage Grotesque',Georgia,serif; }
+    .task-dialog h2 { margin:5px 0 0; font:600 22px 'Instrument Sans',system-ui,sans-serif; }
     .task-dialog>label,.task-detail-fields label,.agent-edit-form label { display:grid; gap:6px; color:var(--muted); font-size:12px; }
-    .task-dialog input,.task-dialog textarea,.task-dialog select,.task-conversation select,.task-conversation textarea,.agent-edit-form input { width:100%; padding:10px 11px; border:1px solid #555646; border-radius:5px; background:#1b1e19; color:var(--text); }
+    .task-dialog input,.task-dialog textarea,.task-dialog select,.task-conversation select,.task-conversation textarea,.agent-edit-form input { width:100%; padding:10px 11px; border:1px solid #3b3f31; border-radius:5px; background:#0c0f0a; color:var(--text); }
     .task-detail-fields { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:9px; }
     .task-dialog>.primary { justify-self:start; }
     .task-conversation { margin-top:6px; padding-top:15px; border-top:1px solid var(--line); }
@@ -1004,10 +1032,10 @@
     .task-comment-list article span { color:var(--clay); }
     .task-comment-list article time { margin-left:auto; color:var(--quiet); }
     .task-comment-list article p { margin:6px 0 0; white-space:pre-wrap; }
-    .comment-load-more { display:block; margin:0 auto 8px; padding:7px 11px; border:1px solid #454b3c; border-radius:6px; background:#24291f; color:#c9d5bc; font-size:11px; cursor:pointer; }
-    .comment-load-more:hover:not(:disabled) { border-color:#82936e; background:#2c3326; }
+    .comment-load-more { display:block; margin:0 auto 8px; padding:7px 11px; border:1px solid #454b3c; border-radius:6px; background:#24291f; color:#b3bea0; font-size:11px; cursor:pointer; }
+    .comment-load-more:hover:not(:disabled) { border-color:#72825a; background:#2c3326; }
     .comment-load-more:disabled { opacity:.6; cursor:wait; }
-    .agent-edit-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0; padding:15px; border:1px solid var(--line); border-radius:7px; background:#20231c; }
+    .agent-edit-form { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; margin:14px 0; padding:15px; border:1px solid var(--line); border-radius:7px; background:#151810; }
     .agent-edit-form>strong,.agent-edit-form>div { grid-column:1/-1; }
     .agent-edit-form>div { display:flex; gap:8px; }
     @media (max-width:1000px) { .app-shell { grid-template-columns:220px minmax(0,1fr); } .workspace-grid { grid-template-columns:minmax(0,1fr); } .side-column { grid-template-columns:repeat(2,minmax(0,1fr)); } }
@@ -1015,9 +1043,9 @@
         .app-shell { grid-template-columns:64px minmax(0,1fr); }
         .sidebar { padding:16px 7px 12px; }
         .sidebar .brand { justify-content:center; padding:0 0 23px; }
-        .sidebar .brand>span,.sidebar .nav-label,.sidebar-projects,.sidebar-bottom .pilot-text,.cloud-indicator,.nav-text,.nav-count { display:none; }
+        .sidebar .brand>span,.sidebar .nav-label,.sidebar-projects,.ws-switch,.sidebar-bottom .pilot-text,.cloud-indicator,.nav-text,.nav-count { display:none; }
         .workspace-nav button { justify-content:center; padding:11px 4px; font-size:0; }
-        .workspace-nav button>span:first-child { width:auto; font-size:17px; }
+        .nav-icon { width:auto; }
         .sidebar-bottom { justify-content:center; padding:12px 0 0; }
         .pilot-avatar { width:34px; height:34px; }
         .topbar { min-height:58px; padding:0 13px; }

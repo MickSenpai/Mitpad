@@ -44,6 +44,15 @@ function optionalNumber(body: Record<string, unknown>, key: string): number | un
   return value;
 }
 
+function tagList(body: Record<string, unknown>): string[] | undefined {
+  const value = body.tags;
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length > 10 || value.some((tag) => typeof tag !== "string" || tag.length > 32)) {
+    throw new ConvexError("tags debe ser una lista de hasta 10 etiquetas de 32 caracteres.");
+  }
+  return value as string[];
+}
+
 function enumValue<T extends string>(value: string | undefined, allowed: readonly T[], field: string): T | undefined {
   if (value === undefined) return undefined;
   if (!allowed.includes(value as T)) throw new ConvexError(`${field} tiene un valor no válido.`);
@@ -194,7 +203,9 @@ const handler = httpAction(async (ctx, request) => {
       const projectRaw = url.searchParams.get("project_id") ?? undefined;
       const statusRaw = url.searchParams.get("status") ?? undefined;
       const status = enumValue(statusRaw, ["backlog", "todo", "in_progress", "review", "done", "blocked"] as const, "status");
-      const args: { workspaceId: Id<"workspaces">; projectId?: Id<"projects">; status?: typeof status } = { workspaceId: agent.workspaceId };
+      const tagRaw = url.searchParams.get("tag") ?? undefined;
+      const args: { workspaceId: Id<"workspaces">; projectId?: Id<"projects">; status?: typeof status; tag?: string } = { workspaceId: agent.workspaceId };
+      if (tagRaw) args.tag = tagRaw.slice(0, 32);
       if (projectRaw) args.projectId = projectRaw as Id<"projects">;
       if (status) args.status = status;
       return json(await ctx.runQuery(internal.workbench.tareasAgente, args));
@@ -207,9 +218,10 @@ const handler = httpAction(async (ctx, request) => {
       const priority = enumValue(str(body, "priority", 20), ["low", "medium", "high", "urgent"] as const, "priority");
       const assigneeAgentId = str(body, "assignee_agent_id", 100);
       const dueAt = optionalNumber(body, "due_at");
+      const tags = tagList(body);
       const createArgs = {
         workspaceId: agent.workspaceId, agentId: agent.id, projectId, title, description,
-        ...(priority ? { priority } : {}), ...(dueAt === undefined ? {} : { dueAt }),
+        ...(priority ? { priority } : {}), ...(dueAt === undefined ? {} : { dueAt }), ...(tags ? { tags } : {}),
         ...(assigneeAgentId === undefined ? {} : { assigneeAgentId: assigneeAgentId as Id<"agents"> }),
       };
       const task = await ctx.runMutation(internal.workbench.crearTareaAgente, createArgs);
@@ -243,7 +255,7 @@ const handler = httpAction(async (ctx, request) => {
         taskId: decodeURIComponent(taskMatch[1]) as Id<"tasks">,
         ...(str(body, "title", 200) === undefined ? {} : { title: str(body, "title", 200)! }),
         ...(str(body, "description", 50_000) === undefined ? {} : { description: str(body, "description", 50_000)! }),
-        ...(status ? { status } : {}), ...(priority ? { priority } : {}),
+        ...(status ? { status } : {}), ...(priority ? { priority } : {}), ...(tagList(body) ? { tags: tagList(body)! } : {}),
         ...(assigneeAgentId === undefined ? {} : { assigneeAgentId: assigneeAgentId as Id<"agents"> }),
         ...(optionalNumber(body, "due_at") === undefined ? {} : { dueAt: optionalNumber(body, "due_at")! }),
       };
@@ -260,6 +272,11 @@ const handler = httpAction(async (ctx, request) => {
     return fail("Ruta no encontrada.", 404);
   } catch (error) {
     if (error instanceof ConvexError) return fail(String(error.data), 400);
+    // Malformed ids/fields are rejected by the function validators with a plain Error; that is
+    // a client mistake (400), not a server fault.
+    if (error instanceof Error && /ArgumentValidationError|Validator error|Invalid argument|Value does not match validator|Unable to decode|not a valid ID/i.test(error.message)) {
+      return fail("Algún identificador o campo de la solicitud no es válido.", 400);
+    }
     console.error("Error interno al procesar una solicitud de Mitpad.");
     return fail("No se pudo completar la solicitud.", 500);
   }

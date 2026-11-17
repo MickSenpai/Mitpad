@@ -1,6 +1,6 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import { exigirWeb } from "./webAuth";
+import { exigirPropietario as exigirWeb } from "./webAuth";
 
 const vaultInfo = v.object({ id: v.id("privateVaults"), salt: v.string(), checkCiphertext: v.string(), checkIv: v.string() });
 const encryptedVariable = v.object({ id: v.id("privateVariables"), ciphertext: v.string(), iv: v.string(), createdAt: v.number(), updatedAt: v.number() });

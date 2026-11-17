@@ -73,6 +73,46 @@ describe("agent HTTP API", () => {
     expect((await call(t, apiKey, "GET", "/api/v1/events?since=abc")).status).toBe(400);
   });
 
+  it("answers malformed ids with 400 instead of a 500 server error", async () => {
+    const t = convexTest(schema, modules);
+    const { apiKey } = await seedAgent(t, "m");
+    for (const [method, path, body] of [
+      ["GET", "/api/v1/tasks?project_id=garbage", undefined],
+      ["POST", "/api/v1/tasks", { project_id: "garbage", title: "x" }],
+      ["GET", "/api/v1/tasks/garbage/comments", undefined],
+      ["DELETE", "/api/v1/projects/garbage", undefined],
+    ] as const) {
+      const res = await call(t, apiKey, method, path, body);
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+  });
+
+  it("stores normalised task tags and filters by them", async () => {
+    const t = convexTest(schema, modules);
+    const { apiKey } = await seedAgent(t, "g");
+    const project = await (await call(t, apiKey, "POST", "/api/v1/projects", { name: "P" })).json();
+    const tagged = await call(t, apiKey, "POST", "/api/v1/tasks", { project_id: project.id, title: "A", tags: [" Ciberseguridad ", "código", "código"] });
+    expect(tagged.status).toBe(201);
+    expect((await tagged.json()).tags).toEqual(["ciberseguridad", "código"]);
+    const plain = await (await call(t, apiKey, "POST", "/api/v1/tasks", { project_id: project.id, title: "B" })).json();
+    expect(plain.tags).toEqual([]);
+    const filtered = await (await call(t, apiKey, "GET", "/api/v1/tasks?tag=CIBERSEGURIDAD")).json();
+    expect(filtered.map((task: { title: string }) => task.title)).toEqual(["A"]);
+    const updated = await call(t, apiKey, "PATCH", `/api/v1/tasks/${plain.id}`, { tags: ["vulnerabilidad"] });
+    expect((await updated.json()).tags).toEqual(["vulnerabilidad"]);
+    expect((await call(t, apiKey, "GET", "/api/v1/tasks?tag=vulnerabilidad")).status).toBe(200);
+  });
+
+  it("rejects too many or too long task tags", async () => {
+    const t = convexTest(schema, modules);
+    const { apiKey } = await seedAgent(t, "h");
+    const project = await (await call(t, apiKey, "POST", "/api/v1/projects", { name: "P" })).json();
+    const many = Array.from({ length: 11 }, (_, i) => `t${i}`);
+    expect((await call(t, apiKey, "POST", "/api/v1/tasks", { project_id: project.id, title: "x", tags: many })).status).toBe(400);
+    expect((await call(t, apiKey, "POST", "/api/v1/tasks", { project_id: project.id, title: "x", tags: ["x".repeat(33)] })).status).toBe(400);
+    expect((await call(t, apiKey, "POST", "/api/v1/tasks", { project_id: project.id, title: "x", tags: "nope" })).status).toBe(400);
+  });
+
   it("isolates workspaces: one agent cannot see or delete another's project", async () => {
     const t = convexTest(schema, modules);
     const a = await seedAgent(t, "d");

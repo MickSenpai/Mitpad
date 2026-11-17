@@ -4,6 +4,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { userIdPersonal } from "./acceso";
+import { normalizeTags } from "./tags";
 
 const projectStatus = v.union(v.literal("active"), v.literal("archived"));
 const taskStatus = v.union(v.literal("backlog"), v.literal("todo"), v.literal("in_progress"), v.literal("review"), v.literal("done"), v.literal("blocked"));
@@ -19,7 +20,7 @@ const taskValidator = v.object({
   id: v.id("tasks"), workspaceId: v.id("workspaces"), clientId: v.union(v.string(), v.null()), projectId: v.id("projects"),
   parentTaskId: v.union(v.id("tasks"), v.null()), title: v.string(), description: v.string(),
   status: taskStatus, priority: taskPriority, dueAt: v.union(v.number(), v.null()),
-  assigneeAgentId: v.union(v.id("agents"), v.null()), createdByType: actorType,
+  assigneeAgentId: v.union(v.id("agents"), v.null()), tags: v.array(v.string()), createdByType: actorType,
   createdById: v.string(), createdAt: v.number(), updatedAt: v.number(),
 });
 const commentValidator = v.object({
@@ -43,7 +44,7 @@ const publicProject = (doc: Doc<"projects">) => ({
 const publicTask = (doc: Doc<"tasks">) => ({
   id: doc._id, workspaceId: doc.workspaceId, clientId: doc.clientId ?? null, projectId: doc.projectId, parentTaskId: doc.parentTaskId ?? null,
   title: doc.title, description: doc.description, status: doc.status, priority: doc.priority,
-  dueAt: doc.dueAt ?? null, assigneeAgentId: doc.assigneeAgentId ?? null,
+  dueAt: doc.dueAt ?? null, assigneeAgentId: doc.assigneeAgentId ?? null, tags: doc.tags ?? [],
   createdByType: doc.createdByType, createdById: doc.createdById, createdAt: doc.createdAt, updatedAt: doc.updatedAt,
 });
 const publicComment = (doc: Doc<"taskComments">) => ({
@@ -119,28 +120,32 @@ async function listProjects(ctx: QueryCtx, workspaceId: Id<"workspaces">) {
   return docs.map(publicProject);
 }
 
-async function listTasks(ctx: QueryCtx, workspaceId: Id<"workspaces">, projectId?: Id<"projects">, status?: Doc<"tasks">["status"]) {
+async function listTasks(ctx: QueryCtx, workspaceId: Id<"workspaces">, projectId?: Id<"projects">, status?: Doc<"tasks">["status"], tag?: string) {
+  // Tags cannot be indexed (arrays), so a tag filter scans a wider recent window and filters in memory.
+  const limit = tag ? 1000 : 200;
+  const keep = (docs: Doc<"tasks">[]) => (tag ? docs.filter((doc) => doc.tags?.includes(tag)).slice(0, 200) : docs).map(publicTask);
   if (projectId) {
     await ensureProject(ctx, workspaceId, projectId);
     const docs = status
-      ? await ctx.db.query("tasks").withIndex("by_projectId_and_status_and_updatedAt", (q) => q.eq("projectId", projectId).eq("status", status)).order("desc").take(200)
-      : await ctx.db.query("tasks").withIndex("by_projectId_and_updatedAt", (q) => q.eq("projectId", projectId)).order("desc").take(200);
-    return docs.map(publicTask);
+      ? await ctx.db.query("tasks").withIndex("by_projectId_and_status_and_updatedAt", (q) => q.eq("projectId", projectId).eq("status", status)).order("desc").take(limit)
+      : await ctx.db.query("tasks").withIndex("by_projectId_and_updatedAt", (q) => q.eq("projectId", projectId)).order("desc").take(limit);
+    return keep(docs);
   }
   const docs = status
-    ? await ctx.db.query("tasks").withIndex("by_workspaceId_and_status_and_updatedAt", (q) => q.eq("workspaceId", workspaceId).eq("status", status)).order("desc").take(200)
-    : await ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", (q) => q.eq("workspaceId", workspaceId)).order("desc").take(200);
-  return docs.map(publicTask);
+    ? await ctx.db.query("tasks").withIndex("by_workspaceId_and_status_and_updatedAt", (q) => q.eq("workspaceId", workspaceId).eq("status", status)).order("desc").take(limit)
+    : await ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", (q) => q.eq("workspaceId", workspaceId)).order("desc").take(limit);
+  return keep(docs);
 }
 
 async function createTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor: Actor, args: {
   projectId: Id<"projects">; title: string; description: string; priority: Doc<"tasks">["priority"];
-  dueAt?: number; assigneeAgentId?: Id<"agents">; parentTaskId?: Id<"tasks">;
+  dueAt?: number; assigneeAgentId?: Id<"agents">; parentTaskId?: Id<"tasks">; tags?: string[];
 }) {
   await ensureProject(ctx, workspaceId, args.projectId);
   validarTexto(args.title, "Título", 200);
   if (args.description.length > 50_000) throw new ConvexError("La descripción de la tarea supera 50.000 caracteres.");
   if (args.assigneeAgentId) await ensureAgent(ctx, workspaceId, args.assigneeAgentId);
+  const tags = normalizeTags(args.tags ?? []);
   if (args.parentTaskId) {
     const parent = await ctx.db.get(args.parentTaskId);
     if (!parent || parent.projectId !== args.projectId) throw new ConvexError("La tarea padre debe estar en el mismo proyecto.");
@@ -149,7 +154,7 @@ async function createTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
   const id = await ctx.db.insert("tasks", {
     workspaceId, projectId: args.projectId, parentTaskId: args.parentTaskId,
     title: args.title.trim(), description: args.description.trim(), status: "todo", priority: args.priority,
-    dueAt: args.dueAt, assigneeAgentId: args.assigneeAgentId,
+    dueAt: args.dueAt, assigneeAgentId: args.assigneeAgentId, tags,
     createdByType: actor.kind, createdById: actor.id, createdAt: now, updatedAt: now,
   });
   await addEvent(ctx, { workspaceId, projectId: args.projectId, actor, eventType: "task_created", entityType: "task", entityId: id, summary: `Creó la tarea ${args.title.trim()}` });
@@ -160,7 +165,7 @@ async function createTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
 
 async function updateTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor: Actor, taskId: Id<"tasks">, patch: {
   title?: string; description?: string; status?: Doc<"tasks">["status"]; priority?: Doc<"tasks">["priority"];
-  dueAt?: number; assigneeAgentId?: Id<"agents">; projectId?: Id<"projects">;
+  dueAt?: number; assigneeAgentId?: Id<"agents">; projectId?: Id<"projects">; tags?: string[];
 }) {
   const current = await ctx.db.get(taskId);
   if (!current || current.workspaceId !== workspaceId) throw new ConvexError("La tarea no pertenece a este espacio.");
@@ -168,7 +173,7 @@ async function updateTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
   if (patch.title !== undefined) validarTexto(patch.title, "Título", 200);
   if (patch.description !== undefined && patch.description.length > 50_000) throw new ConvexError("La descripción de la tarea supera 50.000 caracteres.");
   if (patch.assigneeAgentId) await ensureAgent(ctx, workspaceId, patch.assigneeAgentId);
-  const changes: Record<string, string | number | Id<"agents"> | Id<"projects"> | undefined> = {};
+  const changes: Record<string, string | number | string[] | Id<"agents"> | Id<"projects"> | undefined> = {};
   if (patch.title !== undefined) changes.title = patch.title.trim();
   if (patch.description !== undefined) changes.description = patch.description.trim();
   if (patch.status !== undefined) changes.status = patch.status;
@@ -176,6 +181,7 @@ async function updateTask(ctx: MutationCtx, workspaceId: Id<"workspaces">, actor
   if (patch.dueAt !== undefined) changes.dueAt = patch.dueAt;
   if (patch.assigneeAgentId !== undefined) changes.assigneeAgentId = patch.assigneeAgentId;
   if (patch.projectId !== undefined) changes.projectId = patch.projectId;
+  if (patch.tags !== undefined) changes.tags = normalizeTags(patch.tags);
   if (Object.keys(changes).length === 0) throw new ConvexError("No hay cambios para guardar.");
   changes.updatedAt = Date.now();
   await ctx.db.patch(taskId, changes);
@@ -226,21 +232,21 @@ export const crearProyectoAgente = internalMutation({
 });
 
 export const tareasAgente = internalQuery({
-  args: { workspaceId: v.id("workspaces"), projectId: v.optional(v.id("projects")), status: v.optional(taskStatus) }, returns: v.array(taskValidator),
-  handler: async (ctx, args) => listTasks(ctx, args.workspaceId, args.projectId, args.status),
+  args: { workspaceId: v.id("workspaces"), projectId: v.optional(v.id("projects")), status: v.optional(taskStatus), tag: v.optional(v.string()) }, returns: v.array(taskValidator),
+  handler: async (ctx, args) => listTasks(ctx, args.workspaceId, args.projectId, args.status, args.tag?.trim().toLowerCase() || undefined),
 });
 
 export const crearTareaAgente = internalMutation({
   args: {
     workspaceId: v.id("workspaces"), agentId: v.id("agents"), projectId: v.id("projects"), title: v.string(),
     description: v.optional(v.string()), priority: v.optional(taskPriority), dueAt: v.optional(v.number()),
-    assigneeAgentId: v.optional(v.id("agents")), parentTaskId: v.optional(v.id("tasks")),
+    assigneeAgentId: v.optional(v.id("agents")), parentTaskId: v.optional(v.id("tasks")), tags: v.optional(v.array(v.string())),
   }, returns: taskValidator,
   handler: async (ctx, args) => {
     const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);
     return createTask(ctx, args.workspaceId, { kind: "agent", id: agent._id }, {
       projectId: args.projectId, title: args.title, description: args.description ?? "", priority: args.priority ?? "medium",
-      dueAt: args.dueAt, assigneeAgentId: args.assigneeAgentId, parentTaskId: args.parentTaskId,
+      dueAt: args.dueAt, assigneeAgentId: args.assigneeAgentId, parentTaskId: args.parentTaskId, tags: args.tags,
     });
   },
 });
@@ -249,7 +255,7 @@ export const actualizarTareaAgente = internalMutation({
   args: {
     workspaceId: v.id("workspaces"), agentId: v.id("agents"), taskId: v.id("tasks"), title: v.optional(v.string()),
     description: v.optional(v.string()), status: v.optional(taskStatus), priority: v.optional(taskPriority),
-    dueAt: v.optional(v.number()), assigneeAgentId: v.optional(v.id("agents")), projectId: v.optional(v.id("projects")),
+    dueAt: v.optional(v.number()), assigneeAgentId: v.optional(v.id("agents")), projectId: v.optional(v.id("projects")), tags: v.optional(v.array(v.string())),
   }, returns: taskValidator,
   handler: async (ctx, args) => {
     const agent = await ensureAgent(ctx, args.workspaceId, args.agentId);

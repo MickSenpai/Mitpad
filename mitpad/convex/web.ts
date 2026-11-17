@@ -3,8 +3,9 @@ import { paginationOptsValidator } from "convex/server";
 import { env, internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { hashAgentApiKey, userIdPersonal } from "./acceso";
+import { normalizeTags } from "./tags";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { exigirWeb } from "./webAuth";
+import { exigirPropietario, exigirWeb } from "./webAuth";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
@@ -13,7 +14,7 @@ const relationType = v.union(v.literal("related_to"), v.literal("parent_of"), v.
 const project = v.object({ id: v.id("projects"), name: v.string(), description: v.string(), status: v.union(v.literal("active"), v.literal("archived")) });
 const projectLink = v.object({ id: v.id("projectLinks"), sourceProjectId: v.id("projects"), targetProjectId: v.id("projects"), relationType, description: v.string(), createdAt: v.number() });
 const knowledge = v.object({ id: v.id("projectKnowledge"), projectId: v.id("projects"), kind: v.union(v.literal("module"), v.literal("function"), v.literal("data"), v.literal("capability"), v.literal("integration"), v.literal("decision")), title: v.string(), summary: v.string(), source: v.string(), tags: v.array(v.string()) });
-const task = v.object({ id: v.id("tasks"), projectId: v.id("projects"), title: v.string(), description: v.string(), status, priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent")), assigneeAgentId: v.union(v.id("agents"), v.null()), createdByType: v.union(v.literal("human"), v.literal("agent")), createdById: v.string(), updatedAt: v.number() });
+const task = v.object({ id: v.id("tasks"), projectId: v.id("projects"), title: v.string(), description: v.string(), status, priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent")), assigneeAgentId: v.union(v.id("agents"), v.null()), tags: v.array(v.string()), createdByType: v.union(v.literal("human"), v.literal("agent")), createdById: v.string(), updatedAt: v.number() });
 const note = v.object({ id: v.string(), title: v.union(v.string(), v.null()), content: v.string(), status: v.union(v.literal("open"), v.literal("attended")), projectId: v.union(v.id("projects"), v.null()), updatedAt: v.number() });
 const image = v.object({ id: v.id("noteImages"), projectId: v.union(v.id("projects"), v.null()), noteId: v.union(v.string(), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), url: v.union(v.string(), v.null()), createdAt: v.number() });
 const workspaceFile = v.object({ id: v.id("workspaceFiles"), projectId: v.union(v.id("projects"), v.null()), filename: v.string(), contentType: v.string(), size: v.number(), tags: v.array(v.string()), url: v.union(v.string(), v.null()), createdAt: v.number() });
@@ -147,7 +148,7 @@ export const dashboard = query({
       projects: projects.map(p => ({ id: p._id, name: p.name, description: p.description, status: p.status })),
       projectLinks: projectLinks.map(link => ({ id: link._id, sourceProjectId: link.sourceProjectId, targetProjectId: link.targetProjectId, relationType: link.relationType, description: link.description ?? "", createdAt: link.createdAt })),
       knowledge: knowledge.map(item => ({ id: item._id, projectId: item.projectId, kind: item.kind, title: item.title, summary: item.summary, source: item.source, tags: item.tags })),
-      tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
+      tasks: tasks.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, tags: t.tags ?? [], createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })),
       agents: agents.map(a => ({ id: a._id, name: a.name, model: a.model, modelProvider: a.modelProvider, clientType: a.clientType, credentialMode: a.credentialMode ?? null, active: a.active, lastSeenAt: a.lastSeenAt ?? null })),
       events: events.map(e => ({ id: e._id, summary: e.summary, actorType: e.actorType, actorId: e.actorId, createdAt: e.createdAt })),
       notes: notes.filter(n => n.deletedAt === undefined).map(n => ({ id: n.uuid, title: n.title ?? null, content: n.content, status: n.status ?? "open" as const, projectId: n.projectId ?? null, updatedAt: n.updatedAt })),
@@ -179,7 +180,7 @@ export const dashboardPage = query({
     }
     if (section === "tasks") {
       const page = await ctx.db.query("tasks").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
-      return { items: page.page.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })), continueCursor: page.continueCursor, isDone: page.isDone };
+      return { items: page.page.map(t => ({ id: t._id, projectId: t.projectId, title: t.title, description: t.description, status: t.status, priority: t.priority, assigneeAgentId: t.assigneeAgentId ?? null, tags: t.tags ?? [], createdByType: t.createdByType, createdById: t.createdById, updatedAt: t.updatedAt })), continueCursor: page.continueCursor, isDone: page.isDone };
     }
     if (section === "notes") {
       const page = await ctx.db.query("notes").withIndex("by_workspaceId_and_updatedAt", q => q.eq("workspaceId", workspace._id)).order("desc").paginate(paginationOpts);
@@ -218,7 +219,7 @@ export const buscarTareas = query({
     const page = field === "title"
       ? await ctx.db.query("tasks").withSearchIndex("search_title", q => q.search("title", term).eq("workspaceId", workspace._id)).paginate(paginationOpts)
       : await ctx.db.query("tasks").withSearchIndex("search_description", q => q.search("description", term).eq("workspaceId", workspace._id)).paginate(paginationOpts);
-    const present = (doc: Doc<"tasks">) => ({ id: doc._id, projectId: doc.projectId, title: doc.title, description: doc.description, status: doc.status, priority: doc.priority, assigneeAgentId: doc.assigneeAgentId ?? null, createdByType: doc.createdByType, createdById: doc.createdById, updatedAt: doc.updatedAt });
+    const present = (doc: Doc<"tasks">) => ({ id: doc._id, projectId: doc.projectId, title: doc.title, description: doc.description, status: doc.status, priority: doc.priority, assigneeAgentId: doc.assigneeAgentId ?? null, tags: doc.tags ?? [], createdByType: doc.createdByType, createdById: doc.createdById, updatedAt: doc.updatedAt });
     return { items: page.page.map(present), continueCursor: page.continueCursor, isDone: page.isDone };
   },
 });
@@ -317,7 +318,7 @@ export const crearCredencialAgente = mutation({
   args: { name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string() },
   returns: v.object({ id: v.id("agents"), name: v.string(), apiKey: v.string() }),
   handler: async (ctx, args) => {
-    const { workspace, identity } = await exigirWeb(ctx);
+    const { workspace, identity } = await exigirPropietario(ctx);
     for (const [field, value, max] of [["name", args.name, 100], ["model", args.model, 120], ["modelProvider", args.modelProvider, 80], ["clientType", args.clientType, 80]] as const) {
       if (!value.trim() || value.length > max) throw new ConvexError(`${field} es obligatorio y debe tener máximo ${max} caracteres.`);
     }
@@ -399,7 +400,7 @@ async function borrarAgente(ctx: MutationCtx, agent: Doc<"agents">) {
 export const eliminarAgente = mutation({
   args: { agentId: v.id("agents") }, returns: v.boolean(),
   handler: async (ctx, { agentId }) => {
-    const { workspace, identity } = await exigirWeb(ctx);
+    const { workspace, identity } = await exigirPropietario(ctx);
     const agent = await ctx.db.get(agentId);
     if (!agent || agent.workspaceId !== workspace._id) return false;
     if (esMeido(agent)) throw new ConvexError("Meido es el agente principal y no se puede eliminar.");
@@ -413,7 +414,7 @@ export const eliminarAgente = mutation({
 export const eliminarAgentesSinConexion = mutation({
   args: {}, returns: v.number(),
   handler: async (ctx) => {
-    const { workspace, identity } = await exigirWeb(ctx);
+    const { workspace, identity } = await exigirPropietario(ctx);
     const agents = await ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", (q) => q.eq("workspaceId", workspace._id)).collect();
     const removable = agents.filter((agent) => agent.lastSeenAt === undefined && !esMeido(agent));
     for (const agent of removable) await borrarAgente(ctx, agent);
@@ -437,16 +438,17 @@ export const crearProyecto = mutation({
 });
 
 export const crearTarea = mutation({
-  args: { projectId: v.id("projects"), title: v.string(), description: v.optional(v.string()), priority: v.optional(v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent"))) }, returns: task,
+  args: { projectId: v.id("projects"), title: v.string(), description: v.optional(v.string()), priority: v.optional(v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent"))), tags: v.optional(v.array(v.string())) }, returns: task,
   handler: async (ctx, args) => {
     const { workspace, identity } = await exigirWeb(ctx);
     const projectDoc = await ctx.db.get(args.projectId);
     if (!projectDoc || projectDoc.workspaceId !== workspace._id) throw new ConvexError("El proyecto no pertenece al workspace.");
     if (!args.title.trim() || args.title.length > 200 || (args.description?.length ?? 0) > 50000) throw new ConvexError("Revisa el título y la descripción de la tarea.");
+    const tags = normalizeTags(args.tags ?? []);
     const now = Date.now();
-    const id = await ctx.db.insert("tasks", { workspaceId: workspace._id, projectId: args.projectId, title: args.title.trim(), description: args.description?.trim() ?? "", status: "todo", priority: args.priority ?? "medium", createdByType: "human", createdById: identity.tokenIdentifier, createdAt: now, updatedAt: now });
+    const id = await ctx.db.insert("tasks", { workspaceId: workspace._id, projectId: args.projectId, title: args.title.trim(), description: args.description?.trim() ?? "", status: "todo", priority: args.priority ?? "medium", tags, createdByType: "human", createdById: identity.tokenIdentifier, createdAt: now, updatedAt: now });
     await ctx.db.insert("activityEvents", { workspaceId: workspace._id, projectId: args.projectId, actorType: "human", actorId: identity.tokenIdentifier, eventType: "task_created", entityType: "task", entityId: id, summary: `Creó la tarea ${args.title.trim()}`, createdAt: now });
-    return { id, projectId: args.projectId, title: args.title.trim(), description: args.description?.trim() ?? "", status: "todo" as const, priority: args.priority ?? "medium", assigneeAgentId: null, createdByType: "human" as const, createdById: identity.tokenIdentifier, updatedAt: now };
+    return { id, projectId: args.projectId, title: args.title.trim(), description: args.description?.trim() ?? "", status: "todo" as const, priority: args.priority ?? "medium", assigneeAgentId: null, tags, createdByType: "human" as const, createdById: identity.tokenIdentifier, updatedAt: now };
   },
 });
 
@@ -456,6 +458,7 @@ export const actualizarTarea = mutation({
     title: v.optional(v.string()), description: v.optional(v.string()),
     priority: v.optional(v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent"))),
     assigneeAgentId: v.optional(v.union(v.id("agents"), v.null())),
+    tags: v.optional(v.array(v.string())),
   }, returns: v.null(),
   handler: async (ctx, args) => {
     const { workspace, identity } = await exigirWeb(ctx);
@@ -472,6 +475,7 @@ export const actualizarTarea = mutation({
       patch.description = args.description.trim();
     }
     if (args.priority !== undefined) patch.priority = args.priority;
+    if (args.tags !== undefined) patch.tags = normalizeTags(args.tags);
     if (args.assigneeAgentId !== undefined) {
       if (args.assigneeAgentId !== null) {
         const agent = await ctx.db.get(args.assigneeAgentId);
@@ -659,9 +663,7 @@ export const actualizarEtiquetasArchivo = mutation({
     const { workspace } = await exigirWeb(ctx);
     const file = await ctx.db.get(fileId);
     if (!file || file.workspaceId !== workspace._id) throw new ConvexError("El archivo no pertenece al workspace.");
-    const normalized = [...new Set(tags.map(tag => tag.trim().toLowerCase()).filter(Boolean))];
-    if (normalized.length > 10 || normalized.some(tag => tag.length > 32)) throw new ConvexError("Usa hasta 10 etiquetas de 32 caracteres cada una.");
-    await ctx.db.patch(fileId, { tags: normalized });
+    await ctx.db.patch(fileId, { tags: normalizeTags(tags) });
     return null;
   },
 });
