@@ -260,6 +260,11 @@ const handler = httpAction(async (ctx, request) => {
     return fail("Ruta no encontrada.", 404);
   } catch (error) {
     if (error instanceof ConvexError) return fail(String(error.data), 400);
+    // Malformed ids/fields are rejected by the function validators with a plain Error; that is
+    // a client mistake (400), not a server fault.
+    if (error instanceof Error && /ArgumentValidationError|Validator error|Invalid argument|Value does not match validator|Unable to decode|not a valid ID/i.test(error.message)) {
+      return fail("Algún identificador o campo de la solicitud no es válido.", 400);
+    }
     console.error("Error interno al procesar una solicitud de Mitpad.");
     return fail("No se pudo completar la solicitud.", 500);
   }

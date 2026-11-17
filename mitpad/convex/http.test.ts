@@ -73,6 +73,20 @@ describe("agent HTTP API", () => {
     expect((await call(t, apiKey, "GET", "/api/v1/events?since=abc")).status).toBe(400);
   });
 
+  it("answers malformed ids with 400 instead of a 500 server error", async () => {
+    const t = convexTest(schema, modules);
+    const { apiKey } = await seedAgent(t, "m");
+    for (const [method, path, body] of [
+      ["GET", "/api/v1/tasks?project_id=garbage", undefined],
+      ["POST", "/api/v1/tasks", { project_id: "garbage", title: "x" }],
+      ["GET", "/api/v1/tasks/garbage/comments", undefined],
+      ["DELETE", "/api/v1/projects/garbage", undefined],
+    ] as const) {
+      const res = await call(t, apiKey, method, path, body);
+      expect(res.status, `${method} ${path}`).toBe(400);
+    }
+  });
+
   it("isolates workspaces: one agent cannot see or delete another's project", async () => {
     const t = convexTest(schema, modules);
     const a = await seedAgent(t, "d");

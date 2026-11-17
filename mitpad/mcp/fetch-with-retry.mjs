@@ -1,17 +1,18 @@
+export const MAX_RETRY_AFTER_MS = 5_000;
 const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 const sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
-function retryDelay(response, retryIndex) {
+export function retryDelay(response, retryIndex, maxMs = MAX_RETRY_AFTER_MS) {
   const retryAfter = Number(response?.headers.get("Retry-After"));
   if (Number.isFinite(retryAfter) && retryAfter > 0) {
-    return Math.min(retryAfter * 1_000, 1_000);
+    return Math.min(retryAfter * 1_000, maxMs);
   }
   return 250 * (retryIndex + 1);
 }
 
 /** Retries only safe reads; writes are never replayed automatically. */
-export async function fetchWithRetry(url, init = {}, { timeoutMs = 20_000, retries = 1 } = {}) {
+export async function fetchWithRetry(url, init = {}, { timeoutMs = 20_000, retries = 1, maxRetryAfterMs = MAX_RETRY_AFTER_MS } = {}) {
   const method = (init.method ?? "GET").toUpperCase();
   const canRetry = method === "GET" || method === "HEAD";
   const attempts = canRetry ? retries + 1 : 1;
@@ -27,7 +28,7 @@ export async function fetchWithRetry(url, init = {}, { timeoutMs = 20_000, retri
     }
 
     if (!RETRYABLE_STATUSES.has(response.status) || attempt + 1 >= attempts) return response;
-    await sleep(retryDelay(response, attempt));
+    await sleep(retryDelay(response, attempt, maxRetryAfterMs));
     await response.body?.cancel().catch(() => {});
   }
 

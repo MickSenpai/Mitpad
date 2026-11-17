@@ -34,7 +34,7 @@ let shuttingDown = false;
 app.get("/healthz", async (_req, res) => {
   if (shuttingDown) return res.status(503).json({ status: "shutting_down", service: "mitpad-mcp" });
   try {
-    const dependency = await fetchWithRetry(`${convexSiteUrl}/api/healthz`, {}, { timeoutMs: 1_100, retries: 2 });
+    const dependency = await fetchWithRetry(`${convexSiteUrl}/api/healthz`, {}, { timeoutMs: 1_100, retries: 2, maxRetryAfterMs: 1_000 });
     if (!dependency.ok) throw new Error(`Convex health returned ${dependency.status}`);
     await dependency.body?.cancel().catch(() => {});
     return res.status(200).json({ status: "ok", service: "mitpad-mcp", dependency: "ok" });
