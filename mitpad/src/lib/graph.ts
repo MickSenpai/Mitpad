@@ -9,7 +9,7 @@ export type RelationType = 'related_to' | 'parent_of' | 'depends_on';
 export type GraphLink = { source_project_id: string; target_project_id: string; relation_type?: RelationType; description?: string };
 
 type ProjectRow = { id: string; name: string; description?: string; status?: string };
-type TaskRow = { id: string; projectId: string; title: string; status: string; description?: string; priority?: string };
+type TaskRow = { id: string; projectId: string; title: string; status: string; description?: string; priority?: string; tags?: string[] };
 type KnowledgeRow = { id: string; projectId: string; title: string; kind: KnowledgeKind; summary: string; source: string; tags: string[] };
 type LinkRow = { sourceProjectId: string; targetProjectId: string; relationType?: RelationType; description?: string };
 
@@ -32,7 +32,7 @@ export function buildGraphNodes(
     const taskNodes: GraphNode[] = tasks.filter(t => t.projectId === projectId).map((t, i) => {
         const angle = angleFor(i);
         const radius = 105 + Math.floor(i / 12) * 28;
-        return { id: `task:${t.id}`, label: t.title, kind: 'task', projectId, x: Math.cos(angle) * radius, y: 34 + (i % 5 - 2) * 20, z: Math.sin(angle) * radius, status: t.status, description: t.description, priority: t.priority };
+        return { id: `task:${t.id}`, label: t.title, kind: 'task', projectId, x: Math.cos(angle) * radius, y: 34 + (i % 5 - 2) * 20, z: Math.sin(angle) * radius, status: t.status, description: t.description, priority: t.priority, tags: t.tags };
     });
     const knowledgeNodes: GraphNode[] = knowledge.filter(k => k.projectId === projectId).map((k, i) => {
         const angle = angleFor(i, 0.8);

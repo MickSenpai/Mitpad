@@ -121,6 +121,7 @@ export default defineSchema({
     priority: v.union(v.literal("low"), v.literal("medium"), v.literal("high"), v.literal("urgent")),
     dueAt: v.optional(v.number()),
     assigneeAgentId: v.optional(v.id("agents")),
+    tags: v.optional(v.array(v.string())),
     createdByType: v.union(v.literal("human"), v.literal("agent")),
     createdById: v.string(),
     createdAt: v.number(),
