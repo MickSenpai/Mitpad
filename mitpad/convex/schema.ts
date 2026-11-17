@@ -21,11 +21,36 @@ export default defineSchema({
     tokenIdentifier: v.string(), // sesión actual; se conserva para compatibilidad con Clerk durante transición
     userId: v.optional(v.id("users")), // identidad estable de Convex Auth, independiente de la sesión
     workspaceId: v.id("workspaces"),
+    // Workspace being viewed when the person belongs to someone else's workspace; falls back to their own.
+    activeWorkspaceId: v.optional(v.id("workspaces")),
     createdAt: v.number(),
   })
     .index("by_tokenIdentifier", ["tokenIdentifier"])
     .index("by_userId", ["userId"])
     .index("by_workspaceId", ["workspaceId"]),
+
+  // People invited into a workspace they do not own. The owner is implicit (workspaces.ownerId / webAccounts).
+  workspaceMembers: defineTable({
+    workspaceId: v.id("workspaces"),
+    userId: v.id("users"),
+    email: v.string(),
+    role: v.literal("editor"),
+    createdAt: v.number(),
+  })
+    .index("by_workspaceId_and_userId", ["workspaceId", "userId"])
+    .index("by_userId", ["userId"]),
+
+  // One-time invitation codes. Only the SHA-256 hash is stored; the code is shown once to the owner.
+  workspaceInvites: defineTable({
+    workspaceId: v.id("workspaces"),
+    codeHash: v.string(),
+    createdByUserId: v.id("users"),
+    createdAt: v.number(),
+    expiresAt: v.number(),
+    usedAt: v.optional(v.number()),
+  })
+    .index("by_codeHash", ["codeHash"])
+    .index("by_workspaceId_and_createdAt", ["workspaceId", "createdAt"]),
 
   agents: defineTable({
     workspaceId: v.id("workspaces"),

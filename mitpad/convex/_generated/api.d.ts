@@ -11,10 +11,12 @@
 import type * as acceso from "../acceso.js";
 import type * as agents from "../agents.js";
 import type * as auth from "../auth.js";
+import type * as collaborators from "../collaborators.js";
 import type * as http from "../http.js";
 import type * as knowledge from "../knowledge.js";
 import type * as privateVariables from "../privateVariables.js";
 import type * as projectLinks from "../projectLinks.js";
+import type * as tags from "../tags.js";
 import type * as web from "../web.js";
 import type * as webAuth from "../webAuth.js";
 import type * as workbench from "../workbench.js";
@@ -30,10 +32,12 @@ declare const fullApi: ApiFromModules<{
   acceso: typeof acceso;
   agents: typeof agents;
   auth: typeof auth;
+  collaborators: typeof collaborators;
   http: typeof http;
   knowledge: typeof knowledge;
   privateVariables: typeof privateVariables;
   projectLinks: typeof projectLinks;
+  tags: typeof tags;
   web: typeof web;
   webAuth: typeof webAuth;
   workbench: typeof workbench;

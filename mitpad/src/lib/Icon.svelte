@@ -1,6 +1,6 @@
 <script lang="ts">
     // Small stroke icon set (24px grid, 1.6 stroke) so navigation does not depend on unicode glyphs.
-    export let name: 'folder' | 'board' | 'memory' | 'image' | 'file' | 'activity' | 'agents' | 'key' | 'map';
+    export let name: 'folder' | 'board' | 'memory' | 'image' | 'file' | 'activity' | 'agents' | 'key' | 'map' | 'team';
     export let size = 18;
 
     const paths: Record<string, string> = {
@@ -12,6 +12,7 @@
         activity: 'M3 12h4l2.5-6 4.5 12 2.5-6H21',
         agents: 'M5 8.5h14v9H5zM12 5v3.5M9 13h.01M15 13h.01M9.5 16h5',
         key: 'M14.5 9.5a4 4 0 1 1-1.2 2.8L4 21v-3l1.5-1.5H8V14l3.3-3.3A4 4 0 0 1 14.5 9.5zM16.5 8.5h.01',
+        team: 'M9 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM3.5 19a5.5 5.5 0 0 1 11 0M16.5 11a2.5 2.5 0 1 0 0-5M17 14.2A5 5 0 0 1 20.5 19',
         map: 'M12 4.5l7 4v7l-7 4-7-4v-7zM12 12.5l7-4M12 12.5v7M12 12.5l-7-4',
     };
 </script>

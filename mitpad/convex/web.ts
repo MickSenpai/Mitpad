@@ -5,7 +5,7 @@ import { internal } from "./_generated/api";
 import { hashAgentApiKey, userIdPersonal } from "./acceso";
 import { normalizeTags } from "./tags";
 import { getAuthUserId } from "@convex-dev/auth/server";
-import { exigirWeb } from "./webAuth";
+import { exigirPropietario, exigirWeb } from "./webAuth";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 
@@ -318,7 +318,7 @@ export const crearCredencialAgente = mutation({
   args: { name: v.string(), model: v.string(), modelProvider: v.string(), clientType: v.string() },
   returns: v.object({ id: v.id("agents"), name: v.string(), apiKey: v.string() }),
   handler: async (ctx, args) => {
-    const { workspace, identity } = await exigirWeb(ctx);
+    const { workspace, identity } = await exigirPropietario(ctx);
     for (const [field, value, max] of [["name", args.name, 100], ["model", args.model, 120], ["modelProvider", args.modelProvider, 80], ["clientType", args.clientType, 80]] as const) {
       if (!value.trim() || value.length > max) throw new ConvexError(`${field} es obligatorio y debe tener máximo ${max} caracteres.`);
     }
@@ -400,7 +400,7 @@ async function borrarAgente(ctx: MutationCtx, agent: Doc<"agents">) {
 export const eliminarAgente = mutation({
   args: { agentId: v.id("agents") }, returns: v.boolean(),
   handler: async (ctx, { agentId }) => {
-    const { workspace, identity } = await exigirWeb(ctx);
+    const { workspace, identity } = await exigirPropietario(ctx);
     const agent = await ctx.db.get(agentId);
     if (!agent || agent.workspaceId !== workspace._id) return false;
     if (esMeido(agent)) throw new ConvexError("Meido es el agente principal y no se puede eliminar.");
@@ -414,7 +414,7 @@ export const eliminarAgente = mutation({
 export const eliminarAgentesSinConexion = mutation({
   args: {}, returns: v.number(),
   handler: async (ctx) => {
-    const { workspace, identity } = await exigirWeb(ctx);
+    const { workspace, identity } = await exigirPropietario(ctx);
     const agents = await ctx.db.query("agents").withIndex("by_workspaceId_and_createdAt", (q) => q.eq("workspaceId", workspace._id)).collect();
     const removable = agents.filter((agent) => agent.lastSeenAt === undefined && !esMeido(agent));
     for (const agent of removable) await borrarAgente(ctx, agent);
