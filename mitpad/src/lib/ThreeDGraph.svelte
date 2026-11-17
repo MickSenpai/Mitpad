@@ -15,16 +15,16 @@
 
     // Same warm palette as the rest of the app (olive, sage, sand, terracotta).
     const PALETTE = {
-        project: { fill: '#3a4029', stroke: '#b3bd8f', glow: '179,189,143', label: '#f2eee3' },
-        task: { fill: '#3a3426', stroke: '#c4b184', glow: '196,177,132', label: '#d6d1c0' },
-        done: { fill: '#2f3623', stroke: '#7f8f63', glow: '127,143,99', label: '#aeb39c' },
-        blocked: { fill: '#43261f', stroke: '#e5816b', glow: '229,129,107', label: '#f0b3a5' },
-        knowledge: { fill: '#43312a', stroke: '#dfa284', glow: '223,162,132', label: '#e8cdbb' },
+        project: { fill: '#2a3020', stroke: '#9aa57b', glow: '154,165,123', label: '#e8e5d9' },
+        task: { fill: '#2d2a1e', stroke: '#a8996f', glow: '176,160,118', label: '#bfbcaf' },
+        done: { fill: '#222819', stroke: '#6e7d56', glow: '110,125,86', label: '#9a9d88' },
+        blocked: { fill: '#33201a', stroke: '#c9806c', glow: '201,128,108', label: '#d9a898' },
+        knowledge: { fill: '#322722', stroke: '#c58e6e', glow: '197,142,110', label: '#d3b9a6' },
     };
     const RELATION: Record<RelationType, { rgb: string; dash: number[]; arrow: boolean }> = {
-        related_to: { rgb: '194,151,114', dash: [5, 5], arrow: false },
-        parent_of: { rgb: '179,189,143', dash: [], arrow: true },
-        depends_on: { rgb: '223,162,132', dash: [2, 5], arrow: true },
+        related_to: { rgb: '176,136,104', dash: [5, 5], arrow: false },
+        parent_of: { rgb: '154,165,123', dash: [], arrow: true },
+        depends_on: { rgb: '197,142,110', dash: [2, 5], arrow: true },
     };
 
     let canvas: HTMLCanvasElement;
@@ -196,7 +196,7 @@
             const gx = i * extent / 4, y = extent * 0.42;
             const lines = [[project(gx, y, -extent), project(gx, y, extent)], [project(-extent, y, gx), project(extent, y, gx)]];
             for (const [a, b] of lines) {
-                ctx.strokeStyle = `rgba(184,181,167,${0.07 * ((a.fog + b.fog) / 2)})`;
+                ctx.strokeStyle = `rgba(159,157,143,${0.07 * ((a.fog + b.fog) / 2)})`;
                 ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
             }
         }
@@ -213,7 +213,7 @@
             if (!from || !to) continue;
             const alpha = (node.kind === 'knowledge' ? 0.34 : 0.3) * Math.min(from.alpha, to.alpha) * edgeDim(from.node.id, to.node.id);
             const lw = 1.4 * clamp((from.scale + to.scale) / 2, 0.7, 1.4) * edgeBoost(from.node.id, to.node.id);
-            strokeEdge(from, to, node.kind === 'knowledge' ? '223,162,132' : '196,177,132', alpha, lw, [], false, 0);
+            strokeEdge(from, to, node.kind === 'knowledge' ? '197,142,110' : '176,160,118', alpha, lw, [], false, 0);
         }
         for (const link of links) {
             const from = byId.get(link.source_project_id), to = byId.get(link.target_project_id);
@@ -238,7 +238,7 @@
             ctx.fillStyle = glow; ctx.beginPath(); ctx.arc(x, y, glowR, 0, Math.PI * 2); ctx.fill();
             ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI * 2); ctx.fillStyle = pal.fill; ctx.fill();
             ctx.strokeStyle = pal.stroke; ctx.lineWidth = node.kind === 'project' ? 2 : 1.4; ctx.stroke();
-            if (node.id === selectedId) { ctx.beginPath(); ctx.arc(x, y, radius + 5, 0, Math.PI * 2); ctx.strokeStyle = '#f2eee3'; ctx.lineWidth = 1.5; ctx.stroke(); }
+            if (node.id === selectedId) { ctx.beginPath(); ctx.arc(x, y, radius + 5, 0, Math.PI * 2); ctx.strokeStyle = '#e8e5d9'; ctx.lineWidth = 1.5; ctx.stroke(); }
         }
 
         ctx.textAlign = 'center'; ctx.lineJoin = 'round';
@@ -250,7 +250,7 @@
             const label = node.label.length > 25 ? `${node.label.slice(0, 23)}…` : node.label;
             ctx.globalAlpha = p.alpha * nodeDim(node.id);
             ctx.font = `${node.kind === 'project' ? '600' : '400'} ${Math.max(10, 12 * Math.min(1.15, scale))}px Inter, system-ui, sans-serif`;
-            ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(25,28,23,.85)'; ctx.strokeText(label, x, y + radius + 17);
+            ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(17,20,15,.85)'; ctx.strokeText(label, x, y + radius + 17);
             ctx.fillStyle = paletteFor(node).label; ctx.fillText(label, x, y + radius + 17);
         }
         ctx.globalAlpha = 1;
@@ -431,32 +431,32 @@
 </div>
 
 <style>
-    .graph-shell { min-height: 65vh; overflow: hidden; border-radius: 9px; background: radial-gradient(ellipse at 50% 42%, #2a2d22 0, #191c17 72%); }
-    .graph-toolbar,.graph-legend { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #b8b5a7; padding: 12px 16px; font-size: 11px; }
-    .zoom-controls { display:flex; align-items:center; gap:8px; flex:none; }.zoom-controls input { width:110px; accent-color:#b3bd8f; }.zoom-controls span { min-width:38px; text-align:center; font-variant-numeric:tabular-nums; }
-    .graph-toolbar button { color: #d9e0bf; background: #24271f; border: 1px solid #3b4034; border-radius: 6px; padding: 6px 9px; cursor: pointer; }
-    .graph-toolbar button:hover { border-color: #b3bd8f; }
+    .graph-shell { min-height: 65vh; overflow: hidden; border-radius: 9px; background: radial-gradient(ellipse at 50% 42%, #1c1f16 0, #11140f 72%); }
+    .graph-toolbar,.graph-legend { display: flex; justify-content: space-between; align-items: center; gap: 12px; color: #9f9d8f; padding: 12px 16px; font-size: 11px; }
+    .zoom-controls { display:flex; align-items:center; gap:8px; flex:none; }.zoom-controls input { width:110px; accent-color:#9aa57b; }.zoom-controls span { min-width:38px; text-align:center; font-variant-numeric:tabular-nums; }
+    .graph-toolbar button { color: #bcc3a1; background: #191c14; border: 1px solid #2b2f23; border-radius: 6px; padding: 6px 9px; cursor: pointer; }
+    .graph-toolbar button:hover { border-color: #9aa57b; }
     .canvas-wrap { position: relative; }
     canvas { width: 100%; height: min(68vh, 680px); min-height: 440px; display: block; cursor: grab; touch-action: none; outline: none; }
     canvas:active { cursor: grabbing; }
     canvas.pointing { cursor: pointer; }
-    canvas:focus-visible { box-shadow: inset 0 0 0 2px rgba(179, 189, 143, .55); }
-    .graph-tooltip { position: absolute; width: 236px; display: grid; gap: 3px; padding: 10px 12px; border: 1px solid #3b4034; border-radius: 8px; background: rgba(36, 39, 31, .96); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); pointer-events: none; }
-    .graph-tooltip small { color: #dfa284; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
-    .graph-tooltip strong { color: #f2eee3; font-size: 13px; }
-    .graph-tooltip p { margin: 0; color: #b8b5a7; font-size: 12px; line-height: 1.45; }
-    .graph-legend { justify-content: flex-start; flex-wrap: wrap; border-top: 1px solid #3b4034; }
+    canvas:focus-visible { box-shadow: inset 0 0 0 2px rgba(154, 165, 123, .55); }
+    .graph-tooltip { position: absolute; width: 236px; display: grid; gap: 3px; padding: 10px 12px; border: 1px solid #2b2f23; border-radius: 8px; background: rgba(25, 28, 20, .96); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); pointer-events: none; }
+    .graph-tooltip small { color: #c58e6e; font-size: 10px; letter-spacing: .06em; text-transform: uppercase; }
+    .graph-tooltip strong { color: #e8e5d9; font-size: 13px; }
+    .graph-tooltip p { margin: 0; color: #9f9d8f; font-size: 12px; line-height: 1.45; }
+    .graph-legend { justify-content: flex-start; flex-wrap: wrap; border-top: 1px solid #2b2f23; }
     .graph-legend span { display: inline-flex; align-items: center; gap: 7px; }
     .graph-legend span:last-child { margin-left: auto; }
-    .graph-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #3a4029; border: 1px solid #b3bd8f; }
-    .graph-legend i.task { background: #3a3426; border-color: #c4b184; }
-    .graph-legend i.knowledge { background: #43312a; border-color: #dfa284; }
+    .graph-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #2a3020; border: 1px solid #9aa57b; }
+    .graph-legend i.task { background: #2d2a1e; border-color: #a8996f; }
+    .graph-legend i.knowledge { background: #322722; border-color: #c58e6e; }
     .graph-legend i.rel { width: 20px; height: 0; border: 0; border-top: 2px solid; border-radius: 0; background: none; }
-    .graph-legend i.related { border-top-style: dashed; border-color: #c29772; }
-    .graph-legend i.parent { border-color: #b3bd8f; }
-    .graph-legend i.depends { border-top-style: dotted; border-color: #dfa284; }
+    .graph-legend i.related { border-top-style: dashed; border-color: #b08868; }
+    .graph-legend i.parent { border-color: #9aa57b; }
+    .graph-legend i.depends { border-top-style: dotted; border-color: #c58e6e; }
     .graph-legend i.parent::after,.graph-legend i.depends::after { content: '▸'; position: relative; left: 15px; top: -9px; font-size: 9px; font-style: normal; color: inherit; }
-    .graph-accessible { padding: 0 16px 12px; color:#b8b5a7; font-size:10px; }.graph-accessible summary { cursor:pointer; padding:5px 0 8px; }.graph-accessible>div { display:flex; gap:5px; flex-wrap:wrap; max-height:110px; overflow:auto; }
-    .graph-accessible button { color: #d0ccbf; background: #24271f; border: 1px solid #3b4034; border-radius: 5px; font-size: 10px; padding: 5px 7px; cursor: pointer; }
+    .graph-accessible { padding: 0 16px 12px; color:#9f9d8f; font-size:10px; }.graph-accessible summary { cursor:pointer; padding:5px 0 8px; }.graph-accessible>div { display:flex; gap:5px; flex-wrap:wrap; max-height:110px; overflow:auto; }
+    .graph-accessible button { color: #bfbcaf; background: #191c14; border: 1px solid #2b2f23; border-radius: 5px; font-size: 10px; padding: 5px 7px; cursor: pointer; }
     @media (max-width: 600px) { .graph-toolbar { align-items: flex-start; flex-direction: column; }.zoom-controls { width:100%; flex-wrap:wrap; }.zoom-controls input { flex:1; min-width:80px; } canvas { min-height: 400px; } }
 </style>

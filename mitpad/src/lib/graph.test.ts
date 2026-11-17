@@ -18,6 +18,11 @@ describe("buildGraphNodes", () => {
     expect(nodes[1]).toMatchObject({ status: "todo" });
     expect(nodes[2]).toMatchObject({ knowledgeKind: "module", tags: ["a"] });
   });
+  it("carries project and task descriptions so the detail panel can show them", () => {
+    const nodes = buildGraphNodes([{ id: "p1", name: "One", description: "goal" }], [{ id: "t1", projectId: "p1", title: "T", status: "todo", description: "do it", priority: "high" }], [], "p1");
+    expect(nodes[0]).toMatchObject({ description: "goal" });
+    expect(nodes[1]).toMatchObject({ description: "do it", priority: "high" });
+  });
   it("returns nothing for an unknown selection", () => {
     expect(buildGraphNodes(projects, tasks, knowledge, "missing")).toEqual([]);
   });
